@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Control de Combustible</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+:root{--bg:#f4f1ec;--card:#fff;--ink:#222;--mut:#6b6b6b;--line:#e2ddd5;--acc:#d9622b;--acc2:#b44a1b;--ok:#2e7d4f;--warn:#c98a00;--bad:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:16px}
+header{background:var(--ink);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0}
+header .who{font-size:13px;opacity:.8}
+button{font:inherit;cursor:pointer}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:12px 16px;font-weight:600}
+.btn:active{background:var(--acc2)}
+.btn.sec{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.btn.small{padding:6px 10px;font-size:13px}
+.btn.danger{background:var(--bad)}
+.btn.block{width:100%}
+.wrap{max-width:960px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+.card h2{margin:0 0 12px;font-size:17px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+input,select,textarea{width:100%;font:inherit;padding:11px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:560px){.row{grid-template-columns:1fr}}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 14px 0;max-width:960px;margin:0 auto}
+.tab{background:#e9e4dc;border:0;border-radius:8px 8px 0 0;padding:10px 14px;white-space:nowrap;color:var(--ink)}
+.tab.on{background:var(--card);font-weight:700;border:1px solid var(--line);border-bottom:0}
+.hint{font-size:13px;color:var(--mut);margin-top:4px}
+.err{color:var(--bad);font-size:14px;margin-top:8px}
+.okmsg{color:var(--ok);font-size:14px;margin-top:8px}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase}
+td.n,th.n{text-align:right}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.kpi b{display:block;font-size:24px;margin-top:4px}
+.kpi span{font-size:12px;color:var(--mut);text-transform:uppercase}
+.pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:600}
+.pill.ok{background:#e0f2e7;color:var(--ok)}.pill.warn{background:#fdf0cc;color:#8a5f00}.pill.bad{background:#f9dedc;color:var(--bad)}
+.calc{background:#faf7f2;border:1px dashed var(--line);border-radius:8px;padding:10px;margin-top:10px;font-size:14px;line-height:1.7}
+.center{max-width:380px;margin:8vh auto;padding:0 16px}
+.flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+a.lnk{color:var(--acc2);cursor:pointer;text-decoration:underline;font-size:14px}
+pre.out{background:#faf7f2;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:13px;overflow:auto;max-height:260px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const DENS_DEFAULT = 0.82;
+const CFG_KEY = 'cc_fuel_firebase_cfg';
+let app, sapp, auth, sauth, db;
+let cur = null;                // {uid, username, nombre, role}
+let vehiculos = [], despachos = [], entradas = [], usersList = [], stockInicial = 0;
+let tab = 'despachos';
+let refs = [];
+let signingUp = false;
+let filt = {desde:'', hasta:'', veh:''};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const nf = (n, d=0) => (n==null||isNaN(n)) ? '-' : Number(n).toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fdt = ts => new Date(ts).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
+const dayKey = ts => { const d=new Date(ts); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
+const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'.').replace(/^\.|\.$/g,'');
+const emailFor = u => norm(u) + '@combustible.local';
+const num = v => { const n = parseFloat(String(v).replace(',','.')); return isNaN(n) ? null : n; };
+const isAdmin = () => cur && cur.role === 'admin';
+
+/* ---------- Configuración Firebase ---------- */
+function getCfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY)); }catch(e){ return null; } }
+function renderConfig(){
+  $('app').innerHTML = `<div class="center"><div class="card">
+    <h2>Configuración inicial</h2>
+    <p class="hint">Pegá acá el bloque <b>firebaseConfig</b> que te da Firebase (solo se hace una vez por dispositivo).</p>
+    <textarea id="cfgTxt" rows="9" placeholder="{ apiKey: '...', authDomain: '...', databaseURL: '...', projectId: '...', ... }"></textarea>
+    <div class="err" id="cfgErr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="saveCfg()">Guardar y continuar</button>
+  </div></div>`;
+}
+function saveCfg(){
+  try{
+    let t = $('cfgTxt').value.trim();
+    const i = t.indexOf('{'), j = t.lastIndexOf('}');
+    t = t.slice(i, j+1);
+    const cfg = (new Function('return ' + t))();
+    if(!cfg.apiKey || !cfg.databaseURL) throw new Error('Falta apiKey o databaseURL');
+    localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+    location.reload();
+  }catch(e){ $('cfgErr').textContent = 'No se pudo leer: ' + e.message; }
+}
+function resetCfg(){ if(confirm('¿Borrar la configuración de este dispositivo?')){ localStorage.removeItem(CFG_KEY); location.reload(); } }
+
+/* ---------- Login ---------- */
+function renderLogin(first){
+  $('app').innerHTML = `<div class="center"><div class="card">
+    <h2>⛽ Control de Combustible</h2>
+    <label>Usuario</label><input id="lu" autocapitalize="none" autocomplete="username">
+    <label>Contraseña</label><input id="lp" type="password" autocomplete="current-password">
+    ${first ? `<label>Tu nombre</label><input id="ln">` : ''}
+    <div class="err" id="lerr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="${first?'doFirst()':'doLogin()'}">${first?'Crear administrador':'Ingresar'}</button>
+    <p style="text-align:center;margin:14px 0 0">${first
+      ? `<a class="lnk" onclick="renderLogin(false)">Volver</a>`
+      : `<a class="lnk" onclick="renderLogin(true)">Primera vez: crear el administrador</a>`}</p>
+    <p style="text-align:center;margin:8px 0 0"><a class="lnk" onclick="resetCfg()">Cambiar configuración Firebase</a></p>
+  </div></div>`;
+  const f = e => { if(e.key==='Enter') (first?doFirst:doLogin)(); };
+  $('lp').addEventListener('keydown', f);
+}
+function authErr(e){
+  const m = {'auth/invalid-credential':'Usuario o contraseña incorrectos','auth/wrong-password':'Usuario o contraseña incorrectos','auth/user-not-found':'Usuario o contraseña incorrectos','auth/weak-password':'La contraseña debe tener al menos 6 caracteres','auth/email-already-in-use':'Ese usuario ya existe','auth/too-many-requests':'Demasiados intentos, esperá un rato','auth/network-request-failed':'Sin conexión a internet'};
+  return m[e.code] || e.message;
+}
+async function doLogin(){
+  const u = $('lu').value.trim(), p = $('lp').value;
+  if(!u || !p){ $('lerr').textContent='Completá usuario y contraseña'; return; }
+  try{ await auth.signInWithEmailAndPassword(emailFor(u), p); }
+  catch(e){ $('lerr').textContent = authErr(e); }
+}
+async function doFirst(){
+  const u = $('lu').value.trim(), p = $('lp').value, n = $('ln').value.trim();
+  if(!u || !p || !n){ $('lerr').textContent='Completá todos los campos'; return; }
+  signingUp = true;
+  try{
+    const c = await auth.createUserWithEmailAndPassword(emailFor(u), p);
+    await db.ref('users/'+c.user.uid).set({username:norm(u), nombre:n, role:'admin', creado:Date.now()});
+    signingUp = false;
+    enter(c.user);
+  }catch(e){
+    signingUp = false;
+    let msg = authErr(e);
+    if(e.code === 'PERMISSION_DENIED' || /permission/i.test(e.message)) msg = 'Ya existe un administrador. Ingresá con tu usuario.';
+    $('lerr').textContent = msg;
+    try{ await auth.signOut(); }catch(_){}
+  }
+}
+function logout(){ auth.signOut(); }
+
+/* ---------- Sesión y datos ---------- */
+async function enter(user){
+  const snap = await db.ref('users/'+user.uid).get();
+  if(!snap.exists()){
+    $('app').innerHTML = `<div class="center"><div class="card"><h2>Sin acceso</h2><p>Tu usuario no tiene permisos en esta app. Pedile al administrador que te dé de alta.</p><button class="btn block" onclick="logout()">Salir</button></div></div>`;
+    return;
+  }
+  cur = Object.assign({uid:user.uid}, snap.val());
+  tab = isAdmin() ? 'despachos' : 'cargar';
+  startListeners();
+  renderApp();
+}
+function listen(path, cb, q){
+  const r = q ? q(db.ref(path)) : db.ref(path);
+  r.on('value', s => { cb(s); refresh(); }, err => console.error(path, err));
+  refs.push(r);
+}
+function toArr(s){ const o = s.val() || {}; return Object.keys(o).map(k => Object.assign({id:k}, o[k])); }
+function startListeners(){
+  stopListeners();
+  listen('vehiculos', s => vehiculos = toArr(s).sort((a,b)=>a.nombre.localeCompare(b.nombre)));
+  listen('despachos', s => despachos = toArr(s).sort((a,b)=>b.ts-a.ts), r => r.orderByChild('ts').limitToLast(3000));
+  listen('config/stockInicial', s => stockInicial = s.val() || 0);
+  if(isAdmin()){
+    listen('entradas', s => entradas = toArr(s).sort((a,b)=>b.ts-a.ts));
+    listen('users', s => usersList = toArr(s).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')));
+  }
+}
+function stopListeners(){ refs.forEach(r => r.off()); refs = []; }
+
+/* ---------- Layout ---------- */
+function renderApp(){
+  const tabs = isAdmin()
+    ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['flota','Vehículos'],['usuarios','Usuarios']]
+    : [['cargar','Cargar combustible']];
+  $('app').innerHTML = `
+    <header><div><h1>⛽ Combustible</h1><div class="who">${esc(cur.nombre)} · ${isAdmin()?'Administrador':'Operador'}</div></div>
+    <button class="btn sec small" onclick="logout()">Salir</button></header>
+    ${tabs.length>1 ? `<div class="tabs">${tabs.map(t=>`<button class="tab ${tab===t[0]?'on':''}" onclick="setTab('${t[0]}')">${t[1]}</button>`).join('')}</div>` : ''}
+    <div class="wrap"><div id="fa"></div><div id="la"></div></div>`;
+  renderTab();
+}
+function setTab(t){ tab = t; renderApp(); }
+const TABS = {
+  cargar:{form:formCargar, list:listMis},
+  despachos:{form:()=>'', list:listDespachos},
+  stock:{form:()=>'', list:listStock},
+  entradas:{form:formEntrada, list:listEntradas},
+  flota:{form:formFlota, list:listFlota},
+  usuarios:{form:formUsuarios, list:listUsuarios}
+};
+function renderTab(){ const t = TABS[tab]; $('fa').innerHTML = t.form(); $('la').innerHTML = t.list(); afterForm(); }
+function refresh(){
+  if(!cur || !$('la')) return;
+  $('la').innerHTML = TABS[tab].list();
+  if(tab==='cargar') { fillVeh(); updHint(); }
+  if(tab==='flota' || tab==='despachos') {}
+}
+function afterForm(){ if(tab==='cargar'){ fillVeh(); updHint(); } if(tab==='entradas') calcEntrada(); }
+
+/* ---------- Operador: cargar ---------- */
+function lastContador(){ const d = despachos.find(x => x.contador != null); return d ? d.contador : null; }
+function formCargar(){
+  return `<div class="card"><h2>Nuevo despacho</h2>
+    <label>Vehículo / máquina</label><select id="cv"></select>
+    <div class="row">
+      <div><label>Contador del surtidor (lectura final)</label><input id="cc" type="number" inputmode="decimal" step="any" oninput="onContador()"></div>
+      <div><label>Litros cargados</label><input id="cl" type="number" inputmode="decimal" step="any" oninput="lManual=true"></div>
+    </div>
+    <div class="hint" id="chint"></div>
+    <label>Horómetro / Kilometraje</label><input id="ch" type="number" inputmode="decimal" step="any">
+    <label>Observaciones (opcional)</label><input id="co">
+    <div class="err" id="cerr"></div><div class="okmsg" id="cok"></div>
+    <button class="btn block" style="margin-top:12px" id="cbtn" onclick="saveDespacho()">Guardar despacho</button>
+  </div>`;
+}
+let lManual = false;
+function fillVeh(){
+  const s = $('cv'); if(!s) return;
+  const v = s.value;
+  s.innerHTML = '<option value="">Elegir...</option>' + vehiculos.map(x => `<option value="${x.id}">${esc(x.nombre)}${x.tipo?' ('+esc(x.tipo)+')':''}</option>`).join('');
+  s.value = v;
+}
+function updHint(){
+  const h = $('chint'); if(!h) return;
+  const lc = lastContador();
+  h.textContent = lc != null ? 'Último contador registrado: ' + nf(lc,1) : 'Todavía no hay lecturas previas del contador.';
+}
+function onContador(){
+  const c = num($('cc').value), lc = lastContador();
+  if(!lManual && c != null && lc != null){ const d = Math.round((c-lc)*10)/10; $('cl').value = d > 0 ? d : ''; }
+}
+async function saveDespacho(){
+  const vid = $('cv').value, c = num($('cc').value), l = num($('cl').value), h = num($('ch').value), o = $('co').value.trim();
+  const err = $('cerr'); err.textContent=''; $('cok').textContent='';
+  if(!vid) return err.textContent = 'Elegí el vehículo';
+  if(c == null) return err.textContent = 'Anotá el contador del surtidor';
+  if(l == null || l <= 0) return err.textContent = 'Anotá los litros cargados';
+  if(h == null) return err.textContent = 'Anotá el horómetro o kilometraje';
+  const lc = lastContador();
+  if(lc != null){
+    if(c <= lc && !confirm('El contador ('+nf(c,1)+') es menor o igual al último registrado ('+nf(lc,1)+'). ¿Guardar igual?')) return;
+    const dif = c - lc;
+    if(dif > 0 && Math.abs(dif - l) > Math.max(2, l*0.05) && !confirm('Los litros ('+nf(l,1)+') no coinciden con la diferencia del contador ('+nf(dif,1)+'). ¿Guardar igual?')) return;
+  }
+  const veh = vehiculos.find(x => x.id === vid);
+  $('cbtn').disabled = true;
+  try{
+    await db.ref('despachos').push({ts:Date.now(), uid:cur.uid, operador:cur.nombre, vehiculoId:vid, vehiculo:veh?veh.nombre:'', litros:l, contador:c, horometro:h, obs:o});
+    $('cv').value=''; $('cc').value=''; $('cl').value=''; $('ch').value=''; $('co').value=''; lManual=false;
+    $('cok').textContent = '✓ Despacho guardado';
+    setTimeout(()=>{ const e=$('cok'); if(e) e.textContent=''; }, 4000);
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+  $('cbtn').disabled = false;
+}
+function listMis(){
+  const mis = despachos.filter(d => d.uid === cur.uid).slice(0,10);
+  return `<div class="card"><h2>Mis últimos despachos</h2>${mis.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Vehículo</th><th class="n">Litros</th><th class="n">Contador</th></tr>
+    ${mis.map(d=>`<tr><td>${fdt(d.ts)}</td><td>${esc(d.vehiculo)}</td><td class="n">${nf(d.litros,1)}</td><td class="n">${nf(d.contador,1)}</td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste ninguno.</p>'}</div>`;
+}
+
+/* ---------- Admin: despachos ---------- */
+function filtered(){
+  return despachos.filter(d => {
+    const k = dayKey(d.ts);
+    return (!filt.desde || k >= filt.desde) && (!filt.hasta || k <= filt.hasta) && (!filt.veh || d.vehiculoId === filt.veh);
+  });
+}
+function setF(k, v){ filt[k] = v; $('la').innerHTML = listDespachos(); }
+function listDespachos(){
+  const f = filtered();
+  const tot = f.reduce((a,d)=>a+(d.litros||0),0);
+  const por = {};
+  f.forEach(d => { por[d.vehiculo] = (por[d.vehiculo]||0) + (d.litros||0); });
+  const ranking = Object.entries(por).sort((a,b)=>b[1]-a[1]);
+  return `<div class="card"><h2>Filtros</h2><div class="row">
+    <div><label>Desde</label><input type="date" value="${filt.desde}" onchange="setF('desde',this.value)"></div>
+    <div><label>Hasta</label><input type="date" value="${filt.hasta}" onchange="setF('hasta',this.value)"></div></div>
+    <label>Vehículo</label><select onchange="setF('veh',this.value)"><option value="">Todos</option>${vehiculos.map(v=>`<option value="${v.id}" ${filt.veh===v.id?'selected':''}>${esc(v.nombre)}</option>`).join('')}</select>
+    <div class="flex" style="margin-top:12px"><button class="btn sec small" onclick="exportDespachos()">Exportar CSV</button></div></div>
+  <div class="kpis"><div class="kpi"><span>Litros despachados</span><b>${nf(tot,1)}</b></div><div class="kpi"><span>Despachos</span><b>${f.length}</b></div></div>
+  <div class="card"><h2>Consumo por vehículo</h2>${ranking.length ? `<div class="tw"><table><tr><th>Vehículo</th><th class="n">Litros</th></tr>${ranking.map(r=>`<tr><td>${esc(r[0])}</td><td class="n">${nf(r[1],1)}</td></tr>`).join('')}</table></div>` : '<p class="hint">Sin datos.</p>'}</div>
+  <div class="card"><h2>Despachos (${f.length > 200 ? 'últimos 200 de ' + f.length : f.length})</h2><div class="tw"><table>
+    <tr><th>Fecha</th><th>Operador</th><th>Vehículo</th><th class="n">Litros</th><th class="n">Contador</th><th class="n">Hor/Km</th><th>Obs.</th><th></th></tr>
+    ${f.slice(0,200).map(d=>`<tr><td>${fdt(d.ts)}</td><td>${esc(d.operador)}</td><td>${esc(d.vehiculo)}</td><td class="n">${nf(d.litros,1)}</td><td class="n">${nf(d.contador,1)}</td><td class="n">${nf(d.horometro,1)}</td><td>${esc(d.obs)}</td><td><button class="btn danger small" onclick="delDespacho('${d.id}')">Borrar</button></td></tr>`).join('')}
+  </table></div></div>`;
+}
+function delDespacho(id){ if(confirm('¿Borrar este despacho?')) db.ref('despachos/'+id).remove(); }
+function download(name, rows){
+  const csv = rows.map(r => r.map(v => { v = String(v ?? ''); return /[",;\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }).join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF'+csv], {type:'text/csv;charset=utf-8'}));
+  a.download = name; a.click();
+}
+function exportDespachos(){
+  download('despachos.csv', [['Fecha','Operador','Vehiculo','Litros','Contador','Horometro/Km','Obs']].concat(filtered().map(d => [fdt(d.ts), d.operador, d.vehiculo, d.litros, d.contador, d.horometro, d.obs])));
+}
+
+/* ---------- Admin: stock ---------- */
+function listStock(){
+  const entRemito = entradas.reduce((a,e)=>a+(e.litrosRemito||0),0);
+  const entPesada = entradas.reduce((a,e)=>a+(e.litrosPesada||0),0);
+  const sal = despachos.reduce((a,d)=>a+(d.litros||0),0);
+  const stock = stockInicial + entRemito - sal;
+  return `<div class="kpis">
+    <div class="kpi"><span>Stock actual en tanque</span><b>${nf(stock,1)} L</b></div>
+    <div class="kpi"><span>Entradas (remitos)</span><b>${nf(entRemito,1)}</b></div>
+    <div class="kpi"><span>Salidas (despachos)</span><b>${nf(sal,1)}</b></div>
+    <div class="kpi"><span>Entradas por pesada</span><b>${nf(entPesada,1)}</b></div></div>
+  <div class="card"><h2>Stock inicial</h2>
+    <p class="hint">Litros que había en el tanque antes de empezar a usar la app. El stock actual = stock inicial + entradas (según remito) − despachos.</p>
+    <div class="flex"><input id="si" type="number" step="any" value="${stockInicial}" style="max-width:200px"><button class="btn" onclick="saveStockInicial()">Guardar</button></div></div>`;
+}
+function saveStockInicial(){ const n = num($('si').value); if(n==null) return; db.ref('config/stockInicial').set(n); }
+
+/* ---------- Admin: entradas ---------- */
+function formEntrada(){
+  const hoy = dayKey(Date.now());
+  return `<div class="card"><h2>Nueva entrada de combustible</h2>
+    <div class="row"><div><label>Fecha</label><input id="ef" type="date" value="${hoy}"></div>
+    <div><label>N° de remito</label><input id="er"></div></div>
+    <label>Litros según remito</label><input id="el" type="number" inputmode="decimal" step="any" oninput="calcEntrada()">
+    <div class="row"><div><label>Pesada de entrada (kg, camión cargado)</label><input id="epe" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div>
+    <div><label>Pesada de salida (kg, camión vacío)</label><input id="eps" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div></div>
+    <label>Densidad (kg por litro)</label><input id="ed" type="number" step="any" value="${DENS_DEFAULT}" oninput="calcEntrada()" style="max-width:140px">
+    <div class="calc" id="ecalc"></div>
+    <div class="err" id="eerr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="saveEntrada()">Guardar entrada</button></div>`;
+}
+function entCalc(pe, ps, d, lr){
+  if(pe==null || ps==null || !d) return null;
+  const neto = pe - ps, lp = neto / d;
+  const diff = lr != null ? lp - lr : null;
+  const pct = (lr ? diff / lr * 100 : null);
+  return {neto, lp, diff, pct};
+}
+function pctPill(p){
+  if(p==null) return '';
+  const a = Math.abs(p), c = a <= 1 ? 'ok' : a <= 2.5 ? 'warn' : 'bad';
+  return `<span class="pill ${c}">${p>0?'+':''}${nf(p,2)}%</span>`;
+}
+function calcEntrada(){
+  const el = $('ecalc'); if(!el) return;
+  const r = entCalc(num($('epe').value), num($('eps').value), num($('ed').value), num($('el').value));
+  if(!r){ el.innerHTML = '<span class="hint">Completá las dos pesadas para ver el cálculo.</span>'; return; }
+  el.innerHTML = `Neto: <b>${nf(r.neto,0)} kg</b><br>Litros según pesada: <b>${nf(r.lp,1)} L</b>` +
+    (r.diff!=null ? `<br>Diferencia vs remito: <b>${r.diff>0?'+':''}${nf(r.diff,1)} L</b> ${pctPill(r.pct)}` : '');
+}
+async function saveEntrada(){
+  const f = $('ef').value, rem = $('er').value.trim(), lr = num($('el').value), pe = num($('epe').value), ps = num($('eps').value), d = num($('ed').value);
+  const err = $('eerr'); err.textContent = '';
+  if(!f || !rem || lr==null || pe==null || ps==null || !d) return err.textContent = 'Completá todos los campos';
+  if(pe <= ps) return err.textContent = 'La pesada de entrada debe ser mayor que la de salida';
+  const r = entCalc(pe, ps, d, lr);
+  const [y,m,dd] = f.split('-').map(Number);
+  try{
+    await db.ref('entradas').push({ts:new Date(y,m-1,dd,12).getTime(), fecha:f, remito:rem, litrosRemito:lr, pesoEntrada:pe, pesoSalida:ps, densidad:d, neto:r.neto, litrosPesada:r.lp, diff:r.diff, pct:r.pct, por:cur.nombre});
+    renderTab();
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+function listEntradas(){
+  return `<div class="card"><h2>Entradas registradas</h2><div class="flex" style="margin-bottom:10px"><button class="btn sec small" onclick="exportEntradas()">Exportar CSV</button></div>
+    ${entradas.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Remito</th><th class="n">L remito</th><th class="n">Entrada kg</th><th class="n">Salida kg</th><th class="n">Neto kg</th><th class="n">L pesada</th><th class="n">Dif. L</th><th>Dif. %</th><th></th></tr>
+    ${entradas.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.remito)}</td><td class="n">${nf(e.litrosRemito,1)}</td><td class="n">${nf(e.pesoEntrada)}</td><td class="n">${nf(e.pesoSalida)}</td><td class="n">${nf(e.neto)}</td><td class="n">${nf(e.litrosPesada,1)}</td><td class="n">${e.diff==null?'-':(e.diff>0?'+':'')+nf(e.diff,1)}</td><td>${pctPill(e.pct)}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
+    </table></div>` : '<p class="hint">Todavía no hay entradas.</p>'}</div>`;
+}
+function delEntrada(id){ if(confirm('¿Borrar esta entrada?')) db.ref('entradas/'+id).remove(); }
+function exportEntradas(){
+  download('entradas.csv', [['Fecha','Remito','Litros remito','Pesada entrada kg','Pesada salida kg','Neto kg','Densidad','Litros pesada','Diferencia L','Diferencia %']].concat(entradas.map(e => [e.fecha, e.remito, e.litrosRemito, e.pesoEntrada, e.pesoSalida, e.neto, e.densidad, (e.litrosPesada||0).toFixed(1), e.diff==null?'':e.diff.toFixed(1), e.pct==null?'':e.pct.toFixed(2)])));
+}
+
+/* ---------- Admin: flota ---------- */
+function formFlota(){
+  return `<div class="card"><h2>Agregar vehículo / máquina</h2>
+    <div class="row"><div><label>Nombre o patente</label><input id="fn"></div><div><label>Tipo (opcional)</label><input id="ft" placeholder="Camión, pala, tractor..."></div></div>
+    <div class="err" id="ferr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="addVeh()">Agregar</button></div>`;
+}
+async function addVeh(){
+  const n = $('fn').value.trim(), t = $('ft').value.trim();
+  if(!n) return $('ferr').textContent = 'Poné un nombre o patente';
+  if(vehiculos.some(v => v.nombre.toLowerCase() === n.toLowerCase())) return $('ferr').textContent = 'Ya existe';
+  await db.ref('vehiculos').push({nombre:n, tipo:t});
+  $('fn').value=''; $('ft').value=''; $('ferr').textContent='';
+}
+function listFlota(){
+  return `<div class="card"><h2>Vehículos (${vehiculos.length})</h2>${vehiculos.length ? `<div class="tw"><table><tr><th>Nombre</th><th>Tipo</th><th></th></tr>
+    ${vehiculos.map(v=>`<tr><td>${esc(v.nombre)}</td><td>${esc(v.tipo)}</td><td><button class="btn danger small" onclick="delVeh('${v.id}')">Quitar</button></td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste vehículos.</p>'}</div>`;
+}
+function delVeh(id){ if(confirm('¿Quitar este vehículo de la lista? Los despachos ya registrados se conservan.')) db.ref('vehiculos/'+id).remove(); }
+
+/* ---------- Admin: usuarios ---------- */
+function formUsuarios(){
+  return `<div class="card"><h2>Alta de operadores</h2>
+    <p class="hint">Pegá los nombres, uno por línea (ej: <i>Juan Pérez</i>). El usuario se genera solo (ej: <i>juan.perez</i>) y todos arrancan con la contraseña que elijas acá.</p>
+    <label>Nombres</label><textarea id="un" rows="6"></textarea>
+    <label>Contraseña inicial (mínimo 6 caracteres)</label><input id="up">
+    <div class="err" id="uerr"></div>
+    <button class="btn block" style="margin-top:12px" id="ubtn" onclick="bulkUsers()">Crear operadores</button>
+    <pre class="out" id="uout" style="display:none"></pre></div>`;
+}
+async function bulkUsers(){
+  const names = $('un').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const pw = $('up').value;
+  const err = $('uerr'); err.textContent = '';
+  if(!names.length) return err.textContent = 'Pegá al menos un nombre';
+  if(pw.length < 6) return err.textContent = 'La contraseña debe tener al menos 6 caracteres';
+  $('ubtn').disabled = true;
+  const out = $('uout'); out.style.display = 'block'; out.textContent = '';
+  const taken = new Set(usersList.map(u => u.username));
+  for(const nombre of names){
+    let base = norm(nombre) || 'operador', u = base, i = 2;
+    while(taken.has(u)) u = base + i++;
+    taken.add(u);
+    try{
+      const c = await sauth.createUserWithEmailAndPassword(emailFor(u), pw);
+      const uid = c.user.uid;
+      await sauth.signOut();
+      await db.ref('users/'+uid).set({username:u, nombre, role:'operador', creado:Date.now()});
+      out.textContent += `✓ ${nombre} → usuario: ${u}\n`;
+    }catch(e){ out.textContent += `✗ ${nombre}: ${authErr(e)}\n`; }
+  }
+  out.textContent += `\nContraseña inicial: ${pw}`;
+  $('ubtn').disabled = false;
+}
+function listUsuarios(){
+  return `<div class="card"><h2>Usuarios (${usersList.length})</h2><div class="tw"><table><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr>
+    ${usersList.map(u=>`<tr><td>${esc(u.nombre)}</td><td>${esc(u.username)}</td><td>${u.role==='admin'?'Administrador':'Operador'}</td><td>${u.id===cur.uid?'':`<button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
+    <p class="hint">"Quitar acceso" bloquea al usuario en la app. Su cuenta puede borrarse del todo desde la consola de Firebase (Authentication).</p></div>`;
+}
+function delUser(id){ if(confirm('¿Quitar el acceso a este usuario?')) db.ref('users/'+id).remove(); }
+
+/* ---------- Arranque ---------- */
+(function boot(){
+  const cfg = getCfg();
+  if(!cfg){ renderConfig(); return; }
+  try{
+    app = firebase.initializeApp(cfg);
+    sapp = firebase.initializeApp(cfg, 'Secondary');
+    auth = app.auth(); sauth = sapp.auth(); db = app.database();
+  }catch(e){ $('app').innerHTML = '<div class="center"><div class="card"><h2>Error de configuración</h2><p>'+esc(e.message)+'</p><button class="btn block" onclick="resetCfg()">Reconfigurar</button></div></div>'; return; }
+  auth.onAuthStateChanged(user => {
+    if(signingUp) return;
+    if(user) enter(user);
+    else { stopListeners(); cur = null; vehiculos = []; despachos = []; entradas = []; usersList = []; renderLogin(false); }
+  });
+})();
+</script>
+</body>
+</html>
