@@ -108,10 +108,10 @@ function renderLogin(first){
     ${first ? `<label>Tu nombre</label><input id="ln">` : ''}
     <div class="err" id="lerr"></div>
     <button class="btn block" style="margin-top:12px" onclick="${first?'doFirst()':'doLogin()'}">${first?'Crear administrador':'Ingresar'}</button>
-    <p style="text-align:center;margin:14px 0 0">${first
-      ? `<a class="lnk" onclick="renderLogin(false)">Volver</a>`
-      : `<a class="lnk" onclick="renderLogin(true)">Primera vez: crear el administrador</a>`}</p>
-    <p style="text-align:center;margin:8px 0 0"><a class="lnk" onclick="resetCfg()">Cambiar configuración Firebase</a></p>
+    ${first
+      ? `<p style="text-align:center;margin:14px 0 0"><a class="lnk" onclick="location.hash='';renderLogin(false)">Volver</a></p>
+         <p style="text-align:center;margin:8px 0 0"><a class="lnk" onclick="resetCfg()">Cambiar configuración Firebase</a></p>`
+      : `<p style="text-align:center;margin:16px 0 0"><a class="lnk" style="font-size:12px;color:var(--mut)" onclick="showRecover()">¿Olvidaste tu usuario o contraseña?</a></p><div id="recov" class="hint" style="display:none;margin-top:10px"></div>`}
   </div></div>`;
   const f = e => { if(e.key==='Enter') (first?doFirst:doLogin)(); };
   $('lp').addEventListener('keydown', f);
@@ -143,7 +143,21 @@ async function doFirst(){
     try{ await auth.signOut(); }catch(_){}
   }
 }
+function showRecover(){
+  const r=$('recov'); r.style.display='block';
+  r.innerHTML='<b>Si sos operador:</b> pedile al administrador que te recuerde tu usuario o te cree uno nuevo.<br><br><b>Si sos administrador:</b> la contraseña se restablece desde la consola de Firebase. Consultalo con quien armó la app.';
+}
 function logout(){ auth.signOut(); }
+async function changePass(){
+  const old = prompt('Escribí tu contraseña actual:'); if(old===null) return;
+  const nw = prompt('Escribí la contraseña nueva (mínimo 6 caracteres):'); if(nw===null) return;
+  try{
+    const u = auth.currentUser;
+    await u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(u.email, old));
+    await u.updatePassword(nw);
+    alert('Contraseña cambiada.');
+  }catch(e){ alert('No se pudo cambiar: ' + authErr(e)); }
+}
 
 /* ---------- Sesión y datos ---------- */
 async function enter(user){
@@ -182,7 +196,7 @@ function renderApp(){
     : [['cargar','Cargar combustible']];
   $('app').innerHTML = `
     <header><div><h1>⛽ Combustible</h1><div class="who">${esc(cur.nombre)} · ${isAdmin()?'Administrador':'Operador'}</div></div>
-    <button class="btn sec small" onclick="logout()">Salir</button></header>
+    <div class="flex"><button class="btn sec small" onclick="changePass()">Contraseña</button><button class="btn sec small" onclick="logout()">Salir</button></div></header>
     ${tabs.length>1 ? `<div class="tabs">${tabs.map(t=>`<button class="tab ${tab===t[0]?'on':''}" onclick="setTab('${t[0]}')">${t[1]}</button>`).join('')}</div>` : ''}
     <div class="wrap"><div id="fa"></div><div id="la"></div></div>`;
   renderTab();
@@ -449,7 +463,7 @@ function delUser(id){ if(confirm('¿Quitar el acceso a este usuario?')) db.ref('
   auth.onAuthStateChanged(user => {
     if(signingUp) return;
     if(user) enter(user);
-    else { stopListeners(); cur = null; vehiculos = []; despachos = []; entradas = []; usersList = []; renderLogin(false); }
+    else { stopListeners(); cur = null; vehiculos = []; despachos = []; entradas = []; usersList = []; renderLogin(location.hash==='#setup'); }
   });
 })();
 </script>
