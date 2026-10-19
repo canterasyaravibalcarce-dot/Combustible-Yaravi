@@ -3,15 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Combustible Yaravi</title>
-<link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/png" href="icon-192.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<meta name="theme-color" content="#1a1a1a">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Combustible">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Control de Combustible</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
@@ -343,6 +335,9 @@ function tankStats(t){
   return {ini, ent, rec, sal, tras, stock: ini + ent + rec - sal};
 }
 const tipoTxt = t => t === 'fijo' ? 'Fijo' : 'Móvil';
+const combOf = t => (t && t.combustible === 'premium') ? 'premium' : 'comun';
+const combTxt = c => c === 'premium' ? 'Premium' : 'Común';
+const entComb = e => e.combustible || combOf(tanques.find(x => x.id === e.tanqueId));
 
 /* ---------- Operador: cargar ---------- */
 let lManual = false;
@@ -396,13 +391,13 @@ function fillDeps(){
   const pv = $('cv').value, pt = $('ct').value, pd = $('cdt').value;
   const ts = tanksOf(suc);
   const orig = DEST === 'tanque' ? ts.filter(t => t.tipo === 'fijo') : ts;
-  const tlabel = t => t.tipo === 'fijo' ? 'Tanque fijo: ' + esc(t.nombre) : 'Tanque móvil: ' + esc(t.nombre) + ' (quedan ' + nf(tankStats(t).stock,0) + ' L)';
+  const tlabel = t => t.tipo === 'fijo' ? 'Tanque fijo: ' + esc(t.nombre) : 'Tanque móvil: ' + esc(t.nombre) + (combOf(t)==='premium' ? ' · PREMIUM' : '') + ' (quedan ' + nf(tankStats(t).stock,0) + ' L)';
   $('ct').innerHTML = !suc ? '<option value="">Elegí la sucursal primero</option>'
     : orig.length ? orig.map(t => `<option value="${t.id}">${tlabel(t)}</option>`).join('')
     : '<option value="">No hay tanques cargados (avisale al administrador)</option>';
   if(orig.some(t => t.id === pt)) $('ct').value = pt;
   const mov = ts.filter(t => t.tipo === 'movil');
-  $('cdt').innerHTML = mov.length ? mov.map(t => `<option value="${t.id}">${esc(t.nombre)} (quedan ${nf(tankStats(t).stock,0)} L)</option>`).join('') : '<option value="">No hay tanques móviles</option>';
+  $('cdt').innerHTML = mov.length ? mov.map(t => `<option value="${t.id}">${esc(t.nombre)}${combOf(t)==='premium'?' · PREMIUM':''} (quedan ${nf(tankStats(t).stock,0)} L)</option>`).join('') : '<option value="">No hay tanques móviles</option>';
   if(mov.some(t => t.id === pd)) $('cdt').value = pd;
   const opt = v => `<option value="${v.id}">${esc(v.nombre)}${v.tipo?' ('+esc(v.tipo)+')':''}</option>`;
   const grp = (l, a) => a.length ? `<optgroup label="${esc(l)}">${a.map(opt).join('')}</optgroup>` : '';
@@ -455,6 +450,7 @@ async function saveDespacho(){
   }else{
     dtank = tanques.find(x => x.id === $('cdt').value);
     if(!dtank) return err.textContent = 'Elegí el tanque móvil que se carga';
+    if(combOf(dtank) !== combOf(tank)) return err.textContent = 'No se puede pasar gasoil ' + combTxt(combOf(tank)).toLowerCase() + ' a un tanque de gasoil ' + combTxt(combOf(dtank)).toLowerCase();
   }
   if(tank.tipo === 'fijo' && c == null) return err.textContent = 'Anotá el contador del surtidor';
   if(l == null || l <= 0) return err.textContent = 'Anotá los litros cargados';
@@ -471,7 +467,7 @@ async function saveDespacho(){
       if(dif > 0 && Math.abs(dif - l) > Math.max(2, l*0.05) && !confirm('Los litros ('+nf(l,1)+') no coinciden con la diferencia del contador ('+nf(dif,1)+'). ¿Guardar igual?')) return;
     }
   }
-  const rec = {ts:Date.now(), uid:cur.uid, operador:cur.nombre, sucursalId:suc, sucursal:sucName(suc), tanqueId:tank.id, tanque:tank.nombre, tanqueTipo:tank.tipo, destTipo:DEST, litros:l};
+  const rec = {ts:Date.now(), uid:cur.uid, operador:cur.nombre, sucursalId:suc, sucursal:sucName(suc), tanqueId:tank.id, tanque:tank.nombre, tanqueTipo:tank.tipo, combustible:combOf(tank), destTipo:DEST, litros:l};
   if(tank.tipo === 'fijo' && c != null) rec.contador = c;
   if(DEST === 'vehiculo'){ rec.vehiculoId = veh.id; rec.vehiculo = veh.nombre; rec.horometro = h; }
   else { rec.destTanqueId = dtank.id; rec.destTanque = dtank.nombre; rec.vehiculo = '→ ' + dtank.nombre; }
@@ -491,7 +487,7 @@ function listMis(){
   const suc = $('cs') ? $('cs').value : '';
   const movs = tanques.filter(t => t.tipo === 'movil' && (!suc || t.sucursalId === suc)).sort(cmpTank);
   const movCard = movs.length ? `<div class="card"><h2>Stock de tanques móviles${suc ? ' · ' + esc(sucName(suc)) : ''}</h2><div class="tw"><table><tr><th>Tanque</th><th class="n">Stock actual (L)</th></tr>
-    ${movs.map(t => { const st = tankStats(t).stock; return `<tr><td>${esc(t.nombre)}</td><td class="n"><b style="${st<0?'color:var(--bad)':''}">${nf(st,1)}</b></td></tr>`; }).join('')}</table></div></div>` : '';
+    ${movs.map(t => { const st = tankStats(t).stock; return `<tr><td>${esc(t.nombre)}${combOf(t)==='premium'?' <span class="pill warn">Premium</span>':''}</td><td class="n"><b style="${st<0?'color:var(--bad)':''}">${nf(st,1)}</b></td></tr>`; }).join('')}</table></div></div>` : '';
   return movCard + `<div class="card"><h2>Mis últimos despachos</h2>${mis.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Destino</th><th>Sale de</th><th class="n">Litros</th></tr>
     ${mis.map(d=>`<tr><td>${fdt(d.ts)}</td><td>${esc(d.sucursal||'-')}</td><td>${esc(destLabel(d))}</td><td>${esc(origLabel(d))}</td><td class="n">${nf(d.litros,1)}</td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste ninguno.</p>'}</div>`;
 }
@@ -549,17 +545,19 @@ function listStock(){
   const rows = tanques.filter(t => !admSuc || t.sucursalId === admSuc).sort(cmpTank).map(t => ({t, s: tankStats(t)}));
   const fijos = rows.filter(r => r.t.tipo === 'fijo').reduce((a,r)=>a+r.s.stock, 0);
   const movs = rows.filter(r => r.t.tipo !== 'fijo').reduce((a,r)=>a+r.s.stock, 0);
+  const prem = rows.filter(r => combOf(r.t) === 'premium').reduce((a,r)=>a+r.s.stock, 0);
   const ents = entradas.filter(e => !admSuc || e.sucursalId === admSuc);
   const sinSuc = despachos.filter(d => !d.sucursalId).length + entradas.filter(e => !e.tanqueId).length;
   return sucBar() + `<div class="kpis">
     <div class="kpi"><span>Stock en tanques fijos</span><b>${nf(fijos,1)} L</b></div>
     <div class="kpi"><span>Stock en tanques móviles</span><b>${nf(movs,1)} L</b></div>
+    <div class="kpi"><span>De los cuales, gasoil premium</span><b>${nf(prem,1)} L</b></div>
     <div class="kpi"><span>Entradas (remitos)</span><b>${nf(sum(ents,'litrosRemito'),1)}</b></div>
     <div class="kpi"><span>Entradas por pesada</span><b>${nf(sum(ents,'litrosPesada'),1)}</b></div></div>
   <div class="card"><h2>Stock por tanque</h2>${rows.length ? `<div class="tw"><table>
-    <tr><th>Sucursal</th><th>Tanque</th><th>Tipo</th><th class="n">Stock actual (L)</th><th class="n">Capacidad</th><th class="n">Inicial</th><th class="n">Entradas</th><th class="n">Recibido</th><th class="n">Salidas</th><th class="n">Pasó a móviles</th></tr>
+    <tr><th>Sucursal</th><th>Tanque</th><th>Tipo</th><th>Combustible</th><th class="n">Stock actual (L)</th><th class="n">Capacidad</th><th class="n">Inicial</th><th class="n">Entradas</th><th class="n">Recibido</th><th class="n">Salidas</th><th class="n">Pasó a móviles</th></tr>
     ${rows.map(r => { const cap = r.t.capacidad; const pct = cap ? Math.max(0, Math.min(100, r.s.stock / cap * 100)) : null;
-      return `<tr><td>${esc(sucName(r.t.sucursalId))}</td><td><b>${esc(r.t.nombre)}</b></td><td>${tipoTxt(r.t.tipo)}</td>
+      return `<tr><td>${esc(sucName(r.t.sucursalId))}</td><td><b>${esc(r.t.nombre)}</b></td><td>${tipoTxt(r.t.tipo)}</td><td>${combTxt(combOf(r.t))}</td>
       <td class="n"><b style="${r.s.stock<0?'color:var(--bad)':''}">${nf(r.s.stock,1)}</b>${(r.t.alerta!=null && r.s.stock<r.t.alerta)?' <span class="pill bad">Bajo</span>':''}${pct!=null?`<div class="bar"><i style="width:${pct}%"></i></div>`:''}</td>
       <td class="n">${cap?nf(cap):'-'}</td><td class="n">${nf(r.s.ini,1)}</td><td class="n">${nf(r.s.ent,1)}</td><td class="n">${nf(r.s.rec,1)}</td><td class="n">${nf(r.s.sal,1)}</td><td class="n">${r.t.tipo==='fijo'?nf(r.s.tras,1):'-'}</td></tr>`; }).join('')}
     </table></div>
@@ -579,7 +577,8 @@ function formEntrada(){
   const hoy = dayKey(Date.now());
   return `<div class="card"><h2>Nueva entrada de combustible</h2>
     <div class="row"><div><label>Sucursal</label><select id="es" onchange="fillEntTank()"><option value="">Elegir...</option>${SUCS.map(s=>`<option value="${s.id}" ${admSuc===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></div>
-    <div><label>Tanque que se llena</label><select id="et"></select></div></div>
+    <div><label>Tipo de combustible</label><select id="ec" onchange="fillEntTank()"><option value="comun">Gasoil común</option><option value="premium">Gasoil premium</option></select></div></div>
+    <label>Tanque que se llena</label><select id="et"></select>
     <div class="row"><div><label>Fecha</label><input id="ef" type="date" value="${hoy}"></div>
     <div><label>N° de remito</label><input id="er"></div></div>
     <label>Litros según remito</label><input id="el" type="number" inputmode="decimal" step="any" oninput="calcEntrada()">
@@ -593,8 +592,9 @@ function formEntrada(){
 function fillEntTank(){
   const es = $('es'), et = $('et'); if(!es || !et) return;
   const prev = et.value;
-  const ts = tanksOf(es.value);
-  et.innerHTML = !es.value ? '<option value="">Elegí la sucursal</option>' : ts.length ? ts.map(t => `<option value="${t.id}">${tipoTxt(t.tipo)}: ${esc(t.nombre)}</option>`).join('') : '<option value="">No hay tanques en esta sucursal</option>';
+  const comb = $('ec') ? $('ec').value : 'comun';
+  const ts = tanksOf(es.value).filter(t => combOf(t) === comb);
+  et.innerHTML = !es.value ? '<option value="">Elegí la sucursal</option>' : ts.length ? ts.map(t => `<option value="${t.id}">${tipoTxt(t.tipo)}: ${esc(t.nombre)}</option>`).join('') : '<option value="">No hay tanques de gasoil ' + (comb==='premium'?'premium':'común') + ' en esta sucursal (marcalo en la pestaña Tanques)</option>';
   if(ts.some(t => t.id === prev)) et.value = prev;
   else { const fx = ts.find(t => t.tipo === 'fijo'); if(fx) et.value = fx.id; }
 }
@@ -628,7 +628,7 @@ async function saveEntrada(){
   const r = entCalc(pe, ps, d, lr);
   const [y,m,dd] = f.split('-').map(Number);
   try{
-    await db.ref('entradas').push({ts:new Date(y,m-1,dd,12).getTime(), fecha:f, sucursalId:suc, sucursal:sucName(suc), tanqueId:tank.id, tanque:tank.nombre, remito:rem, litrosRemito:lr, pesoEntrada:pe, pesoSalida:ps, densidad:d, neto:r.neto, litrosPesada:r.lp, diff:r.diff, pct:r.pct, por:cur.nombre});
+    await db.ref('entradas').push({ts:new Date(y,m-1,dd,12).getTime(), fecha:f, sucursalId:suc, sucursal:sucName(suc), tanqueId:tank.id, tanque:tank.nombre, combustible:combOf(tank), remito:rem, litrosRemito:lr, pesoEntrada:pe, pesoSalida:ps, densidad:d, neto:r.neto, litrosPesada:r.lp, diff:r.diff, pct:r.pct, por:cur.nombre});
     renderTab();
   }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
 }
@@ -636,13 +636,13 @@ function entFiltered(){ return entradas.filter(e => !admSuc || e.sucursalId === 
 function listEntradas(){
   const es = entFiltered();
   return sucBar() + `<div class="card"><h2>Entradas registradas</h2><div class="flex" style="margin-bottom:10px"><button class="btn sec small" onclick="exportEntradas()">Exportar CSV</button></div>
-    ${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Tanque</th><th>Remito</th><th class="n">L remito</th><th class="n">Entrada kg</th><th class="n">Salida kg</th><th class="n">Neto kg</th><th class="n">L pesada</th><th class="n">Dif. L</th><th>Dif. %</th><th></th></tr>
-    ${es.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.sucursal||'-')}</td><td>${esc(e.tanque||'-')}</td><td>${esc(e.remito)}</td><td class="n">${nf(e.litrosRemito,1)}</td><td class="n">${nf(e.pesoEntrada)}</td><td class="n">${nf(e.pesoSalida)}</td><td class="n">${nf(e.neto)}</td><td class="n">${nf(e.litrosPesada,1)}</td><td class="n">${e.diff==null?'-':(e.diff>0?'+':'')+nf(e.diff,1)}</td><td>${pctPill(e.pct)}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
+    ${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Tanque</th><th>Combustible</th><th>Remito</th><th class="n">L remito</th><th class="n">Entrada kg</th><th class="n">Salida kg</th><th class="n">Neto kg</th><th class="n">L pesada</th><th class="n">Dif. L</th><th>Dif. %</th><th></th></tr>
+    ${es.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.sucursal||'-')}</td><td>${esc(e.tanque||'-')}</td><td>${combTxt(entComb(e))}</td><td>${esc(e.remito)}</td><td class="n">${nf(e.litrosRemito,1)}</td><td class="n">${nf(e.pesoEntrada)}</td><td class="n">${nf(e.pesoSalida)}</td><td class="n">${nf(e.neto)}</td><td class="n">${nf(e.litrosPesada,1)}</td><td class="n">${e.diff==null?'-':(e.diff>0?'+':'')+nf(e.diff,1)}</td><td>${pctPill(e.pct)}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
     </table></div>` : '<p class="hint">Todavía no hay entradas.</p>'}</div>`;
 }
 function delEntrada(id){ if(confirm('¿Borrar esta entrada?')) db.ref('entradas/'+id).remove(); }
 function exportEntradas(){
-  download('entradas.csv', [['Fecha','Sucursal','Tanque','Remito','Litros remito','Pesada entrada kg','Pesada salida kg','Neto kg','Densidad','Litros pesada','Diferencia L','Diferencia %']].concat(entFiltered().map(e => [e.fecha, e.sucursal||'', e.tanque||'', e.remito, e.litrosRemito, e.pesoEntrada, e.pesoSalida, e.neto, e.densidad, (e.litrosPesada||0).toFixed(1), e.diff==null?'':e.diff.toFixed(1), e.pct==null?'':e.pct.toFixed(2)])));
+  download('entradas.csv', [['Fecha','Sucursal','Tanque','Combustible','Remito','Litros remito','Pesada entrada kg','Pesada salida kg','Neto kg','Densidad','Litros pesada','Diferencia L','Diferencia %']].concat(entFiltered().map(e => [e.fecha, e.sucursal||'', e.tanque||'', combTxt(entComb(e)), e.remito, e.litrosRemito, e.pesoEntrada, e.pesoSalida, e.neto, e.densidad, (e.litrosPesada||0).toFixed(1), e.diff==null?'':e.diff.toFixed(1), e.pct==null?'':e.pct.toFixed(2)])));
 }
 
 /* ---------- Admin: tanques ---------- */
@@ -651,6 +651,7 @@ function formTanque(){
     <div class="row"><div><label>Sucursal</label><select id="ts"><option value="">Elegir...</option>${SUCS.map(s=>`<option value="${s.id}" ${admSuc===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></div>
     <div><label>Tipo</label><select id="tt"><option value="fijo">Tanque fijo</option><option value="movil">Tanque móvil (carro)</option></select></div></div>
     <label>Nombre</label><input id="tn" placeholder="Ej: Tanque principal, Carro 1">
+    <label>Combustible</label><select id="tcb"><option value="comun">Gasoil común</option><option value="premium">Gasoil premium</option></select>
     <div class="row"><div><label>Capacidad en litros (opcional)</label><input id="tc" type="number" inputmode="decimal" step="any"></div>
     <div><label>Stock inicial en litros</label><input id="ti" type="number" inputmode="decimal" step="any" value="0"></div></div>
     <label>Avisarme cuando baje de (litros, opcional)</label><input id="ta" type="number" inputmode="decimal" step="any" placeholder="Ej: 5000">
@@ -662,7 +663,7 @@ async function addTank(){
   const err = $('terr'); err.textContent = '';
   if(!s || !n) return err.textContent = 'Elegí la sucursal y poné un nombre';
   if(tanques.some(x => x.sucursalId === s && x.nombre.toLowerCase() === n.toLowerCase())) return err.textContent = 'Ya existe un tanque con ese nombre en esa sucursal';
-  const o = {sucursalId:s, nombre:n, tipo:t, stockInicial:i};
+  const o = {sucursalId:s, nombre:n, tipo:t, combustible:$('tcb').value, stockInicial:i};
   if(c != null) o.capacidad = c;
   const al = num($('ta').value); if(al != null) o.alerta = al;
   await db.ref('tanques').push(o);
@@ -670,8 +671,8 @@ async function addTank(){
 }
 function listTanques(){
   const ts = tanques.slice().sort(cmpTank);
-  return `<div class="card"><h2>Tanques (${ts.length})</h2>${ts.length ? `<div class="tw"><table><tr><th>Sucursal</th><th>Nombre</th><th>Tipo</th><th class="n">Capacidad</th><th class="n">Stock inicial</th><th class="n">Avisar bajo</th><th></th></tr>
-    ${ts.map(t=>`<tr><td>${esc(sucName(t.sucursalId))}</td><td><b>${esc(t.nombre)}</b></td><td>${tipoTxt(t.tipo)}</td><td class="n">${t.capacidad?nf(t.capacidad):'-'}</td><td class="n">${nf(t.stockInicial||0,1)}</td><td class="n">${t.alerta!=null?nf(t.alerta):'-'}</td>
+  return `<div class="card"><h2>Tanques (${ts.length})</h2>${ts.length ? `<div class="tw"><table><tr><th>Sucursal</th><th>Nombre</th><th>Tipo</th><th>Combustible</th><th class="n">Capacidad</th><th class="n">Stock inicial</th><th class="n">Avisar bajo</th><th></th></tr>
+    ${ts.map(t=>`<tr><td>${esc(sucName(t.sucursalId))}</td><td><b>${esc(t.nombre)}</b></td><td>${tipoTxt(t.tipo)}</td><td>${combTxt(combOf(t))}</td><td class="n">${t.capacidad?nf(t.capacidad):'-'}</td><td class="n">${nf(t.stockInicial||0,1)}</td><td class="n">${t.alerta!=null?nf(t.alerta):'-'}</td>
       <td><button class="btn sec small" onclick="editTank('${t.id}')">Editar</button> <button class="btn danger small" onclick="delTank('${t.id}')">Quitar</button></td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste tanques. Empezá por el tanque fijo de cada sucursal.</p>'}</div>`;
 }
 function editTank(id){
@@ -680,6 +681,7 @@ function editTank(id){
     <label>Nombre</label><input id="mt_n" value="${esc(t.nombre)}">
     <label>Sucursal</label><select id="mt_s">${SUCS.map(x=>`<option value="${x.id}" ${t.sucursalId===x.id?'selected':''}>${esc(x.nombre)}</option>`).join('')}</select>
     <p class="hint">Tipo: ${t.tipo==='fijo'?'tanque fijo':'tanque móvil'} (no se puede cambiar).</p>
+    <label>Combustible</label><select id="mt_cb"><option value="comun" ${combOf(t)==='comun'?'selected':''}>Gasoil común</option><option value="premium" ${combOf(t)==='premium'?'selected':''}>Gasoil premium</option></select>
     <div class="row"><div><label>Capacidad (L)</label><input id="mt_c" type="number" step="any" value="${t.capacidad??''}"></div>
     <div><label>Stock inicial (L)</label><input id="mt_i" type="number" step="any" value="${t.stockInicial||0}"></div></div>
     <label>Avisarme cuando baje de (L)</label><input id="mt_a" type="number" step="any" value="${t.alerta??''}" placeholder="Vacío = sin aviso">
@@ -690,7 +692,7 @@ async function saveTank(id){
   const n = $('mt_n').value.trim(), s = $('mt_s').value, c = num($('mt_c').value), i = num($('mt_i').value) || 0, a = num($('mt_a').value);
   if(!n) return $('mt_e').textContent = 'Poné un nombre';
   if(tanques.some(x => x.id !== id && x.sucursalId === s && x.nombre.toLowerCase() === n.toLowerCase())) return $('mt_e').textContent = 'Ya existe un tanque con ese nombre en esa sucursal';
-  try{ await db.ref('tanques/'+id).update({nombre:n, sucursalId:s, capacidad:c, stockInicial:i, alerta:a}); closeModal(); }
+  try{ await db.ref('tanques/'+id).update({nombre:n, sucursalId:s, combustible:$('mt_cb').value, capacidad:c, stockInicial:i, alerta:a}); closeModal(); }
   catch(e){ $('mt_e').textContent = 'No se pudo guardar: ' + e.message; }
 }
 function setTankIni(id){
