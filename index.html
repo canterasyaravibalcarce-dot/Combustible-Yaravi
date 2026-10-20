@@ -124,6 +124,9 @@ const isMec = () => cur && cur.role === 'mecanico';
 const canMng = () => isAdmin() || isMec();
 const roleTxt = r => r === 'admin' ? 'Administrador' : r === 'mecanico' ? 'Jefe de mecánicos' : 'Operador';
 const isAce = e => e.categoria === 'aceite';
+// Módulo de requerimientos: visible solo para estos usuarios (por ahora). Para abrirlo a todos, cambiar reqOn por: () => true
+const REQ_OWNERS = ['tarcisio.gonzalez'];
+const reqOn = () => !!cur && REQ_OWNERS.includes(cur.username);
 
 /* ---------- Configuración Firebase ---------- */
 const BUILTIN_CFG = {
@@ -227,6 +230,10 @@ async function enter(user){
   }
   cur = Object.assign({uid:user.uid}, snap.val());
   tab = isAdmin() ? 'despachos' : isMec() ? 'reqs' : 'cargar';
+  if(isMec() && !reqOn()){
+    $('app').innerHTML = `<div class="center"><div class="card"><h2>Módulo no habilitado</h2><p>Por ahora no hay nada habilitado para tu usuario. Consultá con el administrador.</p><button class="btn block" onclick="logout()">Salir</button></div></div>`;
+    return;
+  }
   admSuc = '';
   startListeners();
   renderApp();
@@ -240,7 +247,7 @@ function toArr(s){ const o = s.val() || {}; return Object.keys(o).map(k => Objec
 function startListeners(){
   stopListeners();
   listen('vehiculos', s => vehiculos = toArr(s).sort((a,b)=>a.nombre.localeCompare(b.nombre)));
-  listen('requerimientos', s => reqs = toArr(s).sort((a,b)=>b.ts-a.ts), canMng() ? null : r => r.orderByChild('ts').limitToLast(300));
+  if(reqOn()) listen('requerimientos', s => reqs = toArr(s).sort((a,b)=>b.ts-a.ts), canMng() ? null : r => r.orderByChild('ts').limitToLast(300));
   if(isMec()) return;
   listen('tanques', s => { tanques = toArr(s); syncMov(); });
   listen('despachos', s => despachos = toArr(s).sort((a,b)=>b.ts-a.ts), isAdmin() ? null : r => r.orderByChild('ts').limitToLast(1500));
@@ -270,9 +277,10 @@ function allDesp(){
 
 /* ---------- Layout ---------- */
 function renderApp(){
-  const tabs = isAdmin()
+  let tabs = isAdmin()
     ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['reqs','Requerimientos'],['tanques','Tanques'],['flota','Vehículos'],['usuarios','Usuarios']]
     : isMec() ? [['reqs','Requerimientos']] : [['cargar','Cargar combustible'],['reqs','Requerimientos']];
+  tabs = tabs.filter(t => t[0] !== 'reqs' || reqOn());
   $('app').innerHTML = `
     <header><div class="brand"><img src="${LOGO}" alt="Yaravi"><div><h1>Combustible <span>Yaravi</span></h1><div class="hsuc" id="hsuc"></div><div class="who">${esc(cur.nombre)} · ${roleTxt(cur.role)}</div></div></div>
     <div class="flex"><button class="btn sec small" onclick="changePass()">Contraseña</button><button class="btn sec small" onclick="logout()">Salir</button></div></header>
@@ -280,7 +288,7 @@ function renderApp(){
     <div class="wrap"><div id="alerts"></div><div id="fa"></div><div id="la"></div></div>`;
   renderTab();
 }
-function setTab(t){ tab = t; renderApp(); }
+function setTab(t){ if(t === 'reqs' && !reqOn()) return; tab = t; renderApp(); }
 const TABS = {
   cargar:{form:formCargar, list:listMis},
   reqs:{form:()=>canMng()?'':formReq(), list:()=>canMng()?listReqAdmin():listReqMis()},
