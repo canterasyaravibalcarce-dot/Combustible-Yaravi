@@ -4,12 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Control de Combustible</title>
-  <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#1a1a1a">
-<link rel="icon" type="image/png" href="icon-192.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Combustible">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
@@ -32,7 +26,7 @@ button{font:inherit;cursor:pointer}
 .btn.small{padding:6px 10px;font-size:13px}
 .btn.danger{background:var(--bad);color:#fff}
 .btn.block{width:100%}
-.wrap{max-width:1500px;margin:0 auto;padding:14px}
+.wrap{max-width:960px;margin:0 auto;padding:14px}
 .card{background:var(--card);border:1px solid var(--line);border-top:4px solid var(--acc);border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 2px 0 rgba(26,26,26,.06)}
 .card h2{margin:0 0 12px;font-size:17px}
 label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
@@ -84,6 +78,17 @@ pre.out{background:#faf7f2;border:1px solid var(--line);border-radius:8px;paddin
 .mbox{background:#fff;border-top:4px solid var(--acc);border-radius:12px;padding:18px;width:100%;max-width:460px;max-height:90vh;overflow:auto}
 .mbox h2{margin:0 0 6px;font-size:18px}
 .alert{background:#fdecea;border:1px solid #f0b8b3;border-left:6px solid var(--bad);border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#6b1a15;font-size:15px}
+
+.bigok{position:fixed;inset:0;background:rgba(20,20,20,.75);display:none;align-items:center;justify-content:center;z-index:100;padding:20px}
+.bigok .bx{background:#fff;border-top:8px solid var(--ok);border-radius:16px;padding:28px 20px;text-align:center;width:100%;max-width:380px}
+.bigok .tick{width:100px;height:100px;border-radius:50%;background:var(--ok);color:#fff;font-size:68px;line-height:100px;margin:0 auto 16px}
+.bigok h2{font-size:30px;margin:0 0 10px;color:var(--ok);letter-spacing:.02em}
+.bigok p{font-size:19px;margin:4px 0}
+.bigok .tap{font-size:13px;color:var(--mut);margin-top:16px}
+.stg{display:flex;flex-direction:column;gap:4px;margin:10px 0}
+.st{font-size:14px;color:var(--mut)}.st.on{color:var(--ok);font-weight:600}.st small{font-weight:400;color:var(--mut)}
+.card.req{border-top-width:6px}.card.req.u-alta{border-top-color:var(--bad)}.card.req.u-baja{border-top-color:var(--ok)}
+.card.req.hecho{opacity:.8}
 </style>
 </head>
 <body>
@@ -103,6 +108,8 @@ let tab = 'despachos';
 let refs = [];
 let signingUp = false;
 let filt = {desde:'', hasta:'', veh:'', tanque:''};
+let reqs = [];
+let reqFilt = 'abiertos';
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -113,6 +120,10 @@ const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase(
 const emailFor = u => norm(u) + '@combustible.local';
 const num = v => { const n = parseFloat(String(v).replace(',','.')); return isNaN(n) ? null : n; };
 const isAdmin = () => cur && cur.role === 'admin';
+const isMec = () => cur && cur.role === 'mecanico';
+const canMng = () => isAdmin() || isMec();
+const roleTxt = r => r === 'admin' ? 'Administrador' : r === 'mecanico' ? 'Jefe de mecánicos' : 'Operador';
+const isAce = e => e.categoria === 'aceite';
 
 /* ---------- Configuración Firebase ---------- */
 const BUILTIN_CFG = {
@@ -215,7 +226,7 @@ async function enter(user){
     return;
   }
   cur = Object.assign({uid:user.uid}, snap.val());
-  tab = isAdmin() ? 'despachos' : 'cargar';
+  tab = isAdmin() ? 'despachos' : isMec() ? 'reqs' : 'cargar';
   admSuc = '';
   startListeners();
   renderApp();
@@ -229,6 +240,8 @@ function toArr(s){ const o = s.val() || {}; return Object.keys(o).map(k => Objec
 function startListeners(){
   stopListeners();
   listen('vehiculos', s => vehiculos = toArr(s).sort((a,b)=>a.nombre.localeCompare(b.nombre)));
+  listen('requerimientos', s => reqs = toArr(s).sort((a,b)=>b.ts-a.ts), canMng() ? null : r => r.orderByChild('ts').limitToLast(300));
+  if(isMec()) return;
   listen('tanques', s => { tanques = toArr(s); syncMov(); });
   listen('despachos', s => despachos = toArr(s).sort((a,b)=>b.ts-a.ts), isAdmin() ? null : r => r.orderByChild('ts').limitToLast(1500));
   if(isAdmin()){
@@ -258,18 +271,19 @@ function allDesp(){
 /* ---------- Layout ---------- */
 function renderApp(){
   const tabs = isAdmin()
-    ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['tanques','Tanques'],['flota','Vehículos'],['usuarios','Usuarios']]
-    : [['cargar','Cargar combustible']];
+    ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['reqs','Requerimientos'],['tanques','Tanques'],['flota','Vehículos'],['usuarios','Usuarios']]
+    : isMec() ? [['reqs','Requerimientos']] : [['cargar','Cargar combustible'],['reqs','Requerimientos']];
   $('app').innerHTML = `
-    <header><div class="brand"><img src="${LOGO}" alt="Yaravi"><div><h1>Combustible <span>Yaravi</span></h1><div class="hsuc" id="hsuc"></div><div class="who">${esc(cur.nombre)} · ${isAdmin()?'Administrador':'Operador'}</div></div></div>
+    <header><div class="brand"><img src="${LOGO}" alt="Yaravi"><div><h1>Combustible <span>Yaravi</span></h1><div class="hsuc" id="hsuc"></div><div class="who">${esc(cur.nombre)} · ${roleTxt(cur.role)}</div></div></div>
     <div class="flex"><button class="btn sec small" onclick="changePass()">Contraseña</button><button class="btn sec small" onclick="logout()">Salir</button></div></header>
-    ${tabs.length>1 ? `<div class="tabs">${tabs.map(t=>`<button class="tab ${tab===t[0]?'on':''}" onclick="setTab('${t[0]}')">${t[1]}</button>`).join('')}</div>` : ''}
+    ${tabs.length>1 ? `<div class="tabs">${tabs.map(t=>`<button class="tab ${tab===t[0]?'on':''}" id="tab_${t[0]}" onclick="setTab('${t[0]}')">${t[0]==='reqs'?reqTabLabel():t[1]}</button>`).join('')}</div>` : ''}
     <div class="wrap"><div id="alerts"></div><div id="fa"></div><div id="la"></div></div>`;
   renderTab();
 }
 function setTab(t){ tab = t; renderApp(); }
 const TABS = {
   cargar:{form:formCargar, list:listMis},
+  reqs:{form:()=>canMng()?'':formReq(), list:()=>canMng()?listReqAdmin():listReqMis()},
   despachos:{form:()=>'', list:listDespachos},
   stock:{form:()=>'', list:listStock},
   entradas:{form:formEntrada, list:listEntradas},
@@ -281,6 +295,7 @@ function renderTab(){ const t = TABS[tab]; $('fa').innerHTML = t.form(); $('la')
 function afterForm(){
   if(tab==='cargar'){ lManual = false; initCargar(); }
   if(tab==='entradas'){ fillEntTank(); calcEntrada(); }
+  if(tab==='reqs' && !canMng()) initReq();
   updHeaderSuc(); updAlerts();
 }
 function refresh(){
@@ -291,11 +306,14 @@ function refresh(){
   if(!typing) $('la').innerHTML = TABS[tab].list();
   if(tab==='cargar'){ fillDeps(); onTank(); }
   if(tab==='entradas') fillEntTank();
+  if(tab==='reqs' && !canMng()) fillReqDeps();
+  updReqBadge();
 }
 function updHeaderSuc(){
   const el = $('hsuc'); if(!el) return;
   if(tab==='cargar' && $('cs')) el.textContent = $('cs').value ? sucName($('cs').value) : 'Elegí la sucursal';
-  else el.textContent = admSuc ? sucName(admSuc) : (isAdmin() ? 'Todas las sucursales' : '');
+  else if(tab==='reqs' && $('rs')) el.textContent = $('rs').value ? sucName($('rs').value) : 'Elegí la sucursal';
+  else el.textContent = admSuc ? sucName(admSuc) : (canMng() ? 'Todas las sucursales' : '');
 }
 function sucBar(){
   return `<div class="chips">${[['','Todas']].concat(SUCS.map(s=>[s.id,s.nombre])).map(c=>`<button class="chip ${admSuc===c[0]?'on':''}" onclick="setAdmSuc('${c[0]}')">${esc(c[1])}</button>`).join('')}</div>`;
@@ -483,8 +501,7 @@ async function saveDespacho(){
     await db.ref('despachos').push(rec);
     $('cc').value = ''; $('cl').value = ''; $('ch').value = ''; $('co').value = ''; lManual = false;
     fillDeps();
-    $('cok').textContent = '✓ Despacho guardado';
-    setTimeout(()=>{ const e = $('cok'); if(e) e.textContent = ''; }, 4000);
+    bigOk('DESPACHO GUARDADO', (DEST === 'vehiculo' ? veh.nombre : '→ ' + dtank.nombre) + ' · ' + nf(l,1) + ' L');
   }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
   $('cbtn').disabled = false;
 }
@@ -552,8 +569,8 @@ function listStock(){
   const fijos = rows.filter(r => r.t.tipo === 'fijo').reduce((a,r)=>a+r.s.stock, 0);
   const movs = rows.filter(r => r.t.tipo !== 'fijo').reduce((a,r)=>a+r.s.stock, 0);
   const prem = rows.filter(r => combOf(r.t) === 'premium').reduce((a,r)=>a+r.s.stock, 0);
-  const ents = entradas.filter(e => !admSuc || e.sucursalId === admSuc);
-  const sinSuc = despachos.filter(d => !d.sucursalId).length + entradas.filter(e => !e.tanqueId).length;
+  const ents = entFiltered();
+  const sinSuc = despachos.filter(d => !d.sucursalId).length + entradas.filter(e => !isAce(e) && !e.tanqueId).length;
   return sucBar() + `<div class="kpis">
     <div class="kpi"><span>Stock en tanques fijos</span><b>${nf(fijos,1)} L</b></div>
     <div class="kpi"><span>Stock en tanques móviles</span><b>${nf(movs,1)} L</b></div>
@@ -568,37 +585,58 @@ function listStock(){
       <td class="n">${cap?nf(cap):'-'}</td><td class="n">${nf(r.s.ini,1)}</td><td class="n">${nf(r.s.ent,1)}</td><td class="n">${nf(r.s.rec,1)}</td><td class="n">${nf(r.s.sal,1)}</td><td class="n">${r.t.tipo==='fijo'?nf(r.s.tras,1):'-'}</td></tr>`; }).join('')}
     </table></div>
     <p class="hint">Stock = inicial + entradas + recibido − salidas. Cuando se carga un tanque móvil, esos litros salen del tanque fijo y entran al móvil; lo que el móvil le entrega a una máquina solo descuenta del móvil.</p>` : '<p class="hint">Todavía no hay tanques. Cargalos en la pestaña <b>Tanques</b>.</p>'}</div>
+  ${(()=>{ const ac = {}; entAceFiltered().forEach(e => { const k = e.aceite + '|' + e.unidad; ac[k] = (ac[k]||0) + (e.cantidad||0); }); const rows = Object.entries(ac).sort();
+    return `<div class="card"><h2>Aceites recibidos (acumulado)</h2>${rows.length ? `<div class="tw"><table><tr><th>Aceite</th><th>Unidad</th><th class="n">Cantidad total</th></tr>${rows.map(r => { const [a,u] = r[0].split('|'); return `<tr><td>${esc(a)}</td><td>${esc(u)}</td><td class="n"><b>${nf(r[1], r[1]%1?1:0)}</b></td></tr>`; }).join('')}</table></div>` : '<p class="hint">Todavía no hay entradas de aceites.</p>'}</div>`; })()}
   ${sinSuc ? `<div class="card"><h2>Registros sin sucursal o tanque</h2><p class="hint">Hay ${sinSuc} registros anteriores (de pruebas) que no pertenecen a ningún tanque y no cuentan en el stock.</p><button class="btn danger small" onclick="purgeLegacy()">Borrar esos registros</button></div>` : ''}`;
 }
 async function purgeLegacy(){
   if(!confirm('¿Borrar los despachos y entradas que no tienen sucursal o tanque? Esta acción no se puede deshacer.')) return;
   const upd = {};
   despachos.filter(d => !d.sucursalId).forEach(d => upd['despachos/'+d.id] = null);
-  entradas.filter(e => !e.tanqueId).forEach(e => upd['entradas/'+e.id] = null);
+  entradas.filter(e => !isAce(e) && !e.tanqueId).forEach(e => upd['entradas/'+e.id] = null);
   try{ await db.ref().update(upd); }catch(e){ alert('No se pudo borrar: ' + e.message); }
 }
 
 /* ---------- Admin: entradas ---------- */
+const ACEITES = ['Motor','Transmisión','Hidráulico','Diferencial','Refrigerante','Grasa','Otro'];
 function formEntrada(){
   const hoy = dayKey(Date.now());
-  return `<div class="card"><h2>Nueva entrada de combustible</h2>
+  return `<div class="card"><h2>Nueva entrada</h2>
     <div class="row"><div><label>Sucursal</label><select id="es" onchange="fillEntTank()"><option value="">Elegir...</option>${SUCS.map(s=>`<option value="${s.id}" ${admSuc===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></div>
-    <div><label>Tipo de combustible</label><select id="ec" onchange="fillEntTank()"><option value="comun">Gasoil común</option><option value="premium">Gasoil premium</option></select></div></div>
-    <label>Tanque que se llena</label><select id="et"></select>
+    <div><label>Tipo de combustible</label><select id="ec" onchange="onEntComb()"><option value="comun">Gasoil común</option><option value="premium">Gasoil premium</option><option value="aceite">Aceites / lubricantes</option></select></div></div>
+    <div id="ecomb"><label>Tanque que se llena</label><select id="et"></select></div>
     <div class="row"><div><label>Fecha</label><input id="ef" type="date" value="${hoy}"></div>
     <div><label>N° de remito</label><input id="er"></div></div>
+    <div id="ecombf">
     <label>Litros según remito</label><input id="el" type="number" inputmode="decimal" step="any" oninput="calcEntrada()">
     <div class="row"><div><label>Pesada de entrada (kg, camión cargado)</label><input id="epe" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div>
     <div><label>Pesada de salida (kg, camión vacío)</label><input id="eps" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div></div>
     <label>Densidad (kg por litro)</label><input id="ed" type="number" step="any" value="${DENS_DEFAULT}" oninput="calcEntrada()" style="max-width:140px">
-    <div class="calc" id="ecalc"></div>
+    <div class="calc" id="ecalc"></div></div>
+    <div id="eace" style="display:none">
+      <label>Tipo de aceite</label><select id="eat" onchange="onAceTipo()">${ACEITES.map(a=>`<option>${a}</option>`).join('')}</select>
+      <div id="eaoWrap" style="display:none"><label>¿Cuál?</label><input id="eao" placeholder="Ej: Aceite de dirección"></div>
+      <div class="row"><div><label>Cantidad</label><input id="eaq" type="number" inputmode="decimal" step="any"></div>
+      <div><label>Unidad</label><select id="eau"><option value="tambores">Tambores</option><option value="latas">Latas</option><option value="litros">Litros</option></select></div></div>
+      <label>Observaciones (opcional)</label><input id="eaobs">
+      <div class="hint">El N° de remito es opcional para aceites.</div>
+    </div>
     <div class="err" id="eerr"></div>
     <button class="btn block" style="margin-top:12px" onclick="saveEntrada()">Guardar entrada</button></div>`;
 }
+function onEntComb(){
+  const a = $('ec').value === 'aceite';
+  $('ecomb').style.display = a ? 'none' : '';
+  $('ecombf').style.display = a ? 'none' : '';
+  $('eace').style.display = a ? '' : 'none';
+  fillEntTank();
+}
+function onAceTipo(){ $('eaoWrap').style.display = $('eat').value === 'Otro' ? '' : 'none'; }
 function fillEntTank(){
   const es = $('es'), et = $('et'); if(!es || !et) return;
   const prev = et.value;
   const comb = $('ec') ? $('ec').value : 'comun';
+  if(comb === 'aceite') return;
   const ts = tanksOf(es.value).filter(t => combOf(t) === comb);
   et.innerHTML = !es.value ? '<option value="">Elegí la sucursal</option>' : ts.length ? ts.map(t => `<option value="${t.id}">${tipoTxt(t.tipo)}: ${esc(t.nombre)}</option>`).join('') : '<option value="">No hay tanques de gasoil ' + (comb==='premium'?'premium':'común') + ' en esta sucursal (marcalo en la pestaña Tanques)</option>';
   if(ts.some(t => t.id === prev)) et.value = prev;
@@ -624,6 +662,28 @@ function calcEntrada(){
     (r.diff!=null ? `<br>Diferencia vs remito: <b>${r.diff>0?'+':''}${nf(r.diff,1)} L</b> ${pctPill(r.pct)}` : '');
 }
 async function saveEntrada(){
+  if($('ec').value === 'aceite') return saveEntradaAceite();
+  return saveEntradaComb();
+}
+async function saveEntradaAceite(){
+  const suc = $('es').value, f = $('ef').value, rem = $('er').value.trim(), q = num($('eaq').value), u = $('eau').value, obs = $('eaobs').value.trim();
+  let a = $('eat').value; if(a === 'Otro') a = $('eao').value.trim();
+  const err = $('eerr'); err.textContent = '';
+  if(!suc) return err.textContent = 'Elegí la sucursal';
+  if(!f) return err.textContent = 'Poné la fecha';
+  if(!a) return err.textContent = 'Escribí qué aceite es';
+  if(q == null || q <= 0) return err.textContent = 'Anotá la cantidad';
+  const [y,m,dd] = f.split('-').map(Number);
+  const rec = {categoria:'aceite', ts:new Date(y,m-1,dd,12).getTime(), fecha:f, sucursalId:suc, sucursal:sucName(suc), aceite:a, cantidad:q, unidad:u, por:cur.nombre};
+  if(rem) rec.remito = rem;
+  if(obs) rec.obs = obs;
+  try{
+    await db.ref('entradas').push(rec);
+    renderTab();
+    bigOk('ENTRADA GUARDADA', a + ' · ' + nf(q, q % 1 ? 1 : 0) + ' ' + u);
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+async function saveEntradaComb(){
   const suc = $('es').value, tid = $('et').value;
   const f = $('ef').value, rem = $('er').value.trim(), lr = num($('el').value), pe = num($('epe').value), ps = num($('eps').value), d = num($('ed').value);
   const err = $('eerr'); err.textContent = '';
@@ -638,8 +698,16 @@ async function saveEntrada(){
     renderTab();
   }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
 }
-function entFiltered(){ return entradas.filter(e => !admSuc || e.sucursalId === admSuc); }
-function listEntradas(){
+function entFiltered(){ return entradas.filter(e => !isAce(e) && (!admSuc || e.sucursalId === admSuc)); }
+function entAceFiltered(){ return entradas.filter(e => isAce(e) && (!admSuc || e.sucursalId === admSuc)); }
+function listEntradas(){ return listEntradasComb() + listAceites(); }
+function listAceites(){
+  const es = entAceFiltered();
+  return `<div class="card"><h2>Entradas de aceites</h2>${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Aceite</th><th class="n">Cantidad</th><th>Unidad</th><th>Remito</th><th>Obs.</th><th></th></tr>
+    ${es.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.sucursal||'-')}</td><td>${esc(e.aceite)}</td><td class="n">${nf(e.cantidad,e.cantidad%1?1:0)}</td><td>${esc(e.unidad)}</td><td>${esc(e.remito||'-')}</td><td>${esc(e.obs||'')}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
+    </table></div>` : '<p class="hint">Todavía no hay entradas de aceites.</p>'}</div>`;
+}
+function listEntradasComb(){
   const es = entFiltered();
   return sucBar() + `<div class="card"><h2>Entradas registradas</h2><div class="flex" style="margin-bottom:10px"><button class="btn sec small" onclick="exportEntradas()">Exportar CSV</button></div>
     ${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Tanque</th><th>Combustible</th><th>Remito</th><th class="n">L remito</th><th class="n">Entrada kg</th><th class="n">Salida kg</th><th class="n">Neto kg</th><th class="n">L pesada</th><th class="n">Dif. L</th><th>Dif. %</th><th></th></tr>
@@ -754,7 +822,7 @@ function formUsuarios(){
   return `<div class="card"><h2>Alta de usuarios</h2>
     <p class="hint">Pegá los nombres, uno por línea (ej: <i>Juan Pérez</i>). El usuario se genera solo (ej: <i>juan.perez</i>) y todos arrancan con la contraseña que elijas acá.</p>
     <label>Nombres</label><textarea id="un" rows="6"></textarea>
-    <label>Rol</label><select id="ur"><option value="operador">Operador</option><option value="admin">Administrador</option></select>
+    <label>Rol</label><select id="ur"><option value="operador">Operador</option><option value="mecanico">Jefe de mecánicos</option><option value="admin">Administrador</option></select>
     <label>Contraseña inicial (mínimo 6 caracteres)</label><input id="up">
     <div class="err" id="uerr"></div>
     <button class="btn block" style="margin-top:12px" id="ubtn" onclick="bulkUsers()">Crear usuarios</button>
@@ -786,15 +854,162 @@ async function bulkUsers(){
 }
 function listUsuarios(){
   return `<div class="card"><h2>Usuarios (${usersList.length})</h2><div class="tw"><table><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr>
-    ${usersList.map(u=>`<tr><td>${esc(u.nombre)}</td><td>${esc(u.username)}</td><td>${u.role==='admin'?'Administrador':'Operador'}</td><td>${u.id===cur.uid?'':`<button class="btn sec small" onclick="toggleRole('${u.id}')">${u.role==='admin'?'Pasar a operador':'Hacer administrador'}</button> <button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
+    ${usersList.map(u=>`<tr><td>${esc(u.nombre)}</td><td>${esc(u.username)}</td><td>${u.id===cur.uid?roleTxt(u.role):`<select style="padding:6px" onchange="setRole('${u.id}',this.value)">${[['operador','Operador'],['mecanico','Jefe de mecánicos'],['admin','Administrador']].map(r=>`<option value="${r[0]}" ${u.role===r[0]?'selected':''}>${r[1]}</option>`).join('')}</select>`}</td><td>${u.id===cur.uid?'':`<button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
     <p class="hint">"Quitar acceso" bloquea al usuario en la app. Su cuenta puede borrarse del todo desde la consola de Firebase (Authentication).</p></div>`;
 }
-function toggleRole(id){
+function setRole(id, nr){
   const u = usersList.find(x => x.id === id); if(!u) return;
-  const nr = u.role === 'admin' ? 'operador' : 'admin';
-  if(confirm((nr === 'admin' ? 'Hacer administrador a ' : 'Pasar a operador a ') + u.nombre + '?')) db.ref('users/'+id+'/role').set(nr);
+  if(confirm('¿Cambiar a ' + u.nombre + ' a ' + roleTxt(nr) + '?')) db.ref('users/'+id+'/role').set(nr);
+  else $('la').innerHTML = TABS[tab].list();
 }
 function delUser(id){ if(confirm('¿Quitar el acceso a este usuario?')) db.ref('users/'+id).remove(); }
+
+/* ---------- Mensaje grande de confirmación ---------- */
+let bigT = null;
+function bigOk(title, sub){
+  let m = $('bigok');
+  if(!m){ m = document.createElement('div'); m.id = 'bigok'; m.className = 'bigok'; m.onclick = closeBigOk; document.body.appendChild(m); }
+  m.innerHTML = `<div class="bx"><div class="tick">✓</div><h2>${esc(title)}</h2><p>${esc(sub || '')}</p><div class="tap">Tocá para cerrar</div></div>`;
+  m.style.display = 'flex';
+  clearTimeout(bigT); bigT = setTimeout(closeBigOk, 5000);
+  try{ if(navigator.vibrate) navigator.vibrate(200); }catch(e){}
+}
+function closeBigOk(){ const m = $('bigok'); if(m) m.style.display = 'none'; clearTimeout(bigT); }
+
+/* ---------- Requerimientos de unidades ---------- */
+const REQ_TIPOS = ['Cubiertas','Vidrio roto','Falla mecánica','Falla eléctrica','Frenos','Luces','Mangueras / hidráulico','Otro'];
+const URG_TXT = {baja:'Baja', media:'Media', alta:'Alta'};
+const URG_RANK = {alta:0, media:1, baja:2};
+const REQ_STAGES = [['leido','Enterado'],['revisado','Revisado por el mecánico'],['reparado','Reparado']];
+const reqStage = r => r.reparado ? 'reparado' : r.revisado ? 'revisado' : r.leido ? 'leido' : 'pendiente';
+const reqPill = r => { const s = reqStage(r); return s === 'reparado' ? '<span class="pill ok">Reparado</span>' : s === 'revisado' ? '<span class="pill warn">Revisado</span>' : s === 'leido' ? '<span class="pill warn">Enterado</span>' : '<span class="pill bad">Pendiente</span>'; };
+const urgPill = u => `<span class="pill ${u === 'alta' ? 'bad' : u === 'media' ? 'warn' : 'ok'}">Urgencia ${URG_TXT[u] || 'media'}</span>`;
+function reqTabLabel(){ if(!canMng()) return 'Requerimientos'; const n = reqs.filter(r => !r.leido).length; return 'Requerimientos' + (n ? ' (' + n + ')' : ''); }
+function updReqBadge(){ const b = $('tab_reqs'); if(b) b.textContent = reqTabLabel(); }
+
+function formReq(){
+  return `<div class="card"><h2>Nuevo requerimiento</h2>
+    <label>Sucursal</label><select id="rs" onchange="fillReqDeps();updHeaderSuc()"></select>
+    <label>Unidad (vehículo / máquina)</label><select id="rv"></select>
+    <div class="row"><div><label>Qué necesita</label><select id="rt">${REQ_TIPOS.map(t => `<option>${t}</option>`).join('')}</select></div>
+    <div><label>Urgencia</label><select id="ru"><option value="baja">Baja</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></div></div>
+    <label>Detalle (qué le falta o qué falla tiene, y en qué parte)</label><textarea id="rd" rows="3" placeholder="Ej: falla en el sistema hidráulico, pierde aceite del cilindro izquierdo"></textarea>
+    <div class="err" id="rerr"></div>
+    <button class="btn block" style="margin-top:12px" id="rbtn" onclick="saveReq()">Enviar requerimiento</button></div>`;
+}
+function initReq(){
+  const fav = getFav();
+  $('rs').innerHTML = '<option value="">Elegir sucursal...</option>' + SUCS.map(s => `<option value="${s.id}">${esc(s.nombre)}</option>`).join('');
+  $('rs').value = fav.suc || '';
+  fillReqDeps(); updHeaderSuc();
+}
+function fillReqDeps(){
+  const rs = $('rs'); if(!rs) return;
+  const suc = rs.value, fav = getFav(), pv = $('rv').value;
+  const opt = v => `<option value="${v.id}">${esc(v.nombre)}${v.tipo ? ' (' + esc(v.tipo) + ')' : ''}</option>`;
+  const grp = (l, a) => a.length ? `<optgroup label="${esc(l)}">${a.map(opt).join('')}</optgroup>` : '';
+  const mine = vehiculos.filter(v => v.sucursalBase === suc);
+  const rot = vehiculos.filter(v => !v.sucursalBase);
+  const oth = vehiculos.filter(v => v.sucursalBase && v.sucursalBase !== suc);
+  $('rv').innerHTML = '<option value="">Elegir...</option>' + (suc ? grp('De ' + sucName(suc), mine) : '') + grp('Rotan entre sucursales', rot) + grp(suc ? 'De otras sucursales' : 'Todos', oth);
+  $('rv').value = vehiculos.some(v => v.id === pv) ? pv : (vehiculos.some(v => v.id === fav.veh) ? fav.veh : '');
+}
+async function saveReq(){
+  const suc = $('rs').value, v = vehiculos.find(x => x.id === $('rv').value), tipo = $('rt').value, urg = $('ru').value, desc = $('rd').value.trim();
+  const err = $('rerr'); err.textContent = '';
+  if(!suc) return err.textContent = 'Elegí la sucursal';
+  if(!v) return err.textContent = 'Elegí la unidad';
+  if(!desc) return err.textContent = 'Contanos qué le falta o qué falla tiene la unidad';
+  const rec = {ts:Date.now(), uid:cur.uid, operador:cur.nombre, sucursalId:suc, sucursal:sucName(suc), vehiculoId:v.id, vehiculo:v.nombre, tipo, urgencia:urg, desc};
+  $('rbtn').disabled = true;
+  try{
+    await db.ref('requerimientos').push(rec);
+    $('rd').value = '';
+    bigOk('REQUERIMIENTO ENVIADO', v.nombre + ' · ' + tipo);
+  }catch(e){ err.textContent = 'No se pudo enviar: ' + e.message; }
+  $('rbtn').disabled = false;
+}
+function stagesHtml(r){
+  return `<div class="stg">${REQ_STAGES.map(x => { const o = r[x[0]]; return `<span class="st ${o ? 'on' : ''}">${o ? '✓' : '○'} ${x[1]}${o ? ' <small>' + fdt(o.ts) + ' · ' + esc(o.por) + '</small>' : ''}</span>`; }).join('')}</div>`;
+}
+function listReqMis(){
+  const mis = reqs.filter(r => r.uid === cur.uid).slice(0, 15);
+  return `<div class="card"><h2>Mis requerimientos</h2>${mis.length ? mis.map(r => `<div style="border-top:1px solid var(--line);padding:10px 0">
+    <div class="flex" style="justify-content:space-between"><b>${esc(r.vehiculo)}</b>${reqPill(r)}</div>
+    <div class="hint">${fdt(r.ts)} · ${esc(r.sucursal || '')} · ${esc(r.tipo)}</div>
+    <div style="margin-top:4px">${esc(r.desc)}</div>
+    ${stagesHtml(r)}
+    ${r.obsMec ? `<div class="hint"><b>Mecánico:</b> ${esc(r.obsMec)}</div>` : ''}</div>`).join('') : '<p class="hint">Todavía no enviaste ninguno.</p>'}</div>`;
+}
+function setReqFilt(v){ reqFilt = v; $('la').innerHTML = listReqAdmin(); }
+function listReqAdmin(){
+  const f = reqs.filter(r => (!admSuc || r.sucursalId === admSuc) && (reqFilt === 'todos' || (reqFilt === 'abiertos' ? !r.reparado : !!r.reparado)))
+    .sort((a,b) => (a.reparado ? 1 : 0) - (b.reparado ? 1 : 0) || (URG_RANK[a.urgencia] ?? 1) - (URG_RANK[b.urgencia] ?? 1) || b.ts - a.ts);
+  const chips = [['abiertos','Abiertos'],['reparados','Reparados'],['todos','Todos']].map(c => `<button class="chip ${reqFilt === c[0] ? 'on' : ''}" onclick="setReqFilt('${c[0]}')">${c[1]}</button>`).join('');
+  return sucBar() + `<div class="chips">${chips}</div>` + (f.length ? f.map(r => `<div class="card req u-${esc(r.urgencia || 'media')} ${r.reparado ? 'hecho' : ''}">
+    <div class="flex" style="justify-content:space-between"><b style="font-size:17px">${esc(r.vehiculo)}</b>${reqPill(r)}</div>
+    <div class="hint">${fdt(r.ts)} · ${esc(r.sucursal || '')} · ${esc(r.tipo)} · Informó: ${esc(r.operador)}</div>
+    <div style="margin:6px 0">${urgPill(r.urgencia)}</div>
+    <div>${esc(r.desc)}</div>
+    ${stagesHtml(r)}
+    <div class="flex">${REQ_STAGES.map(x => r[x[0]]
+      ? `<button class="btn sec small" onclick="toggleStage('${r.id}','${x[0]}')">✓ ${x[1]} (deshacer)</button>`
+      : `<button class="btn small" onclick="toggleStage('${r.id}','${x[0]}')">Marcar: ${x[1]}</button>`).join('')}</div>
+    <label>Observaciones del mecánico</label><textarea id="ro_${r.id}" rows="2">${esc(r.obsMec || '')}</textarea>
+    <div class="flex" style="margin-top:8px"><button class="btn small" onclick="saveObs('${r.id}',this)">Guardar observación</button>
+    <button class="btn sec small" onclick="printReq('${r.id}')">Imprimir</button>
+    ${isAdmin() ? `<button class="btn danger small" onclick="delReq('${r.id}')">Borrar</button>` : ''}</div></div>`).join('') : '<div class="card"><p class="hint">No hay requerimientos en esta vista.</p></div>');
+}
+async function toggleStage(id, key){
+  const r = reqs.find(x => x.id === id); if(!r) return;
+  const order = REQ_STAGES.map(x => x[0]), i = order.indexOf(key), upd = {};
+  const mk = {ts:Date.now(), por:cur.nombre, uid:cur.uid};
+  if(r[key]){
+    if(!confirm('¿Deshacer esta etapa? También se desmarcan las siguientes.')) return;
+    order.slice(i).forEach(k => upd['requerimientos/' + id + '/' + k] = null);
+  }else{
+    order.slice(0, i + 1).forEach(k => { if(!r[k]) upd['requerimientos/' + id + '/' + k] = mk; });
+  }
+  try{ await db.ref().update(upd); }catch(e){ alert('No se pudo guardar: ' + e.message); }
+}
+async function saveObs(id, btn){
+  const t = $('ro_' + id); if(!t) return;
+  const v = t.value.trim();
+  try{
+    await db.ref('requerimientos/' + id).update({obsMec: v || null, obsMecPor: cur.nombre, obsMecTs: Date.now()});
+    if(btn){ const o = btn.textContent; btn.textContent = '✓ Guardada'; setTimeout(() => { btn.textContent = o; }, 1800); }
+  }catch(e){ alert('No se pudo guardar: ' + e.message); }
+}
+function delReq(id){ if(confirm('¿Borrar este requerimiento?')) db.ref('requerimientos/' + id).remove(); }
+function printReq(id){
+  const r = reqs.find(x => x.id === id); if(!r) return;
+  const w = window.open('', '_blank');
+  if(!w) return alert('El navegador bloqueó la ventana de impresión. Permití las ventanas emergentes para este sitio.');
+  const st = o => o ? 'Sí — ' + fdt(o.ts) + ' (' + esc(o.por) + ')' : 'No';
+  const row = (a, b) => `<tr><th>${a}</th><td>${b}</td></tr>`;
+  const n = esc(r.id.slice(-6).toUpperCase());
+  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Requerimiento ${n}</title><style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:28px}
+    h1{font-size:20px;margin:0 0 2px}.sub{color:#555;margin:0 0 16px;font-size:13px}
+    table{width:100%;border-collapse:collapse;margin-bottom:14px}
+    th,td{border:1px solid #999;padding:8px;text-align:left;vertical-align:top;font-size:14px}
+    th{width:32%;background:#f0f0f0}
+    .box{border:1px solid #999;min-height:100px;padding:8px;font-size:14px;white-space:pre-wrap;margin-top:6px}
+    .firmas{display:flex;gap:40px;margin-top:60px}.firmas div{flex:1;border-top:1px solid #000;padding-top:4px;font-size:12px;text-align:center}
+  </style></head><body>
+    <h1>Industrias Yarávi — Requerimiento de unidad</h1>
+    <p class="sub">N° ${n} · Impreso el ${fdt(Date.now())}</p>
+    <table>
+      ${row('Fecha', fdt(r.ts))}${row('Sucursal', esc(r.sucursal || '-'))}${row('Unidad', esc(r.vehiculo))}
+      ${row('Qué necesita', esc(r.tipo))}${row('Urgencia', esc(URG_TXT[r.urgencia] || 'Media'))}${row('Informado por', esc(r.operador))}
+      ${row('Detalle', esc(r.desc))}
+      ${row('Enterado', st(r.leido))}${row('Revisado por el mecánico', st(r.revisado))}${row('Reparado', st(r.reparado))}
+    </table>
+    <b>Observaciones del mecánico</b><div class="box">${esc(r.obsMec || '')}</div>
+    <div class="firmas"><div>Firma del mecánico</div><div>Firma del jefe de mecánicos</div></div>
+  </body></html>`);
+  w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
+}
 
 /* ---------- Arranque ---------- */
 (function boot(){
@@ -808,7 +1023,7 @@ function delUser(id){ if(confirm('¿Quitar el acceso a este usuario?')) db.ref('
   auth.onAuthStateChanged(user => {
     if(signingUp) return;
     if(user) enter(user);
-    else { stopListeners(); cur = null; vehiculos = []; despachos = []; entradas = []; usersList = []; tanques = []; renderLogin(location.hash==='#setup'); }
+    else { stopListeners(); cur = null; vehiculos = []; despachos = []; entradas = []; usersList = []; tanques = []; reqs = []; renderLogin(location.hash==='#setup'); }
   });
 })();
 </script>
