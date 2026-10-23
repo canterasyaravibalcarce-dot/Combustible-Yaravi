@@ -128,12 +128,15 @@ const emailFor = u => norm(u) + '@combustible.local';
 const num = v => { const n = parseFloat(String(v).replace(',','.')); return isNaN(n) ? null : n; };
 const isAdmin = () => cur && cur.role === 'admin';
 const isMec = () => cur && cur.role === 'mecanico';
-const canMng = () => isAdmin() || isMec();
-const roleTxt = r => r === 'admin' ? 'Administrador' : r === 'mecanico' ? 'Jefe de mecánicos' : 'Operador';
+const isJE = () => cur && cur.role === 'jefeequipos';
+const seeAll = () => isAdmin() || isJE();
+const canMng = () => isAdmin() || isMec() || isJE();
+const reqForm = () => !canMng() || isJE();
+const roleTxt = r => r === 'admin' ? 'Administrador' : r === 'mecanico' ? 'Jefe de mecánicos' : r === 'jefeequipos' ? 'Jefe de equipos' : 'Operador';
 const isAce = e => e.categoria === 'aceite';
-// Módulo de requerimientos: visible solo para estos usuarios (por ahora). Para abrirlo a todos, cambiar reqOn por: () => true
+// Módulo de solicitud mecánica: visible solo para estos usuarios y para el rol Jefe de equipos. Para abrirlo a todos, cambiar reqOn por: () => true
 const REQ_OWNERS = ['tarcisio.gonzalez'];
-const reqOn = () => !!cur && REQ_OWNERS.includes(cur.username);
+const reqOn = () => !!cur && (REQ_OWNERS.includes(cur.username) || isJE());
 
 /* ---------- Configuración Firebase ---------- */
 const BUILTIN_CFG = {
@@ -236,7 +239,7 @@ async function enter(user){
     return;
   }
   cur = Object.assign({uid:user.uid}, snap.val());
-  tab = isAdmin() ? 'despachos' : isMec() ? 'reqs' : 'cargar';
+  tab = (isAdmin() || isJE()) ? 'despachos' : isMec() ? 'reqs' : 'cargar';
   if(isMec() && !reqOn()){
     $('app').innerHTML = `<div class="center"><div class="card"><h2>Módulo no habilitado</h2><p>Por ahora no hay nada habilitado para tu usuario. Consultá con el administrador.</p><button class="btn block" onclick="logout()">Salir</button></div></div>`;
     return;
@@ -257,15 +260,15 @@ function startListeners(){
   if(reqOn()) listen('requerimientos', s => reqs = toArr(s).sort((a,b)=>b.ts-a.ts), canMng() ? null : r => r.orderByChild('ts').limitToLast(300));
   if(isMec()) return;
   listen('tanques', s => { tanques = toArr(s); syncMov(); });
-  listen('despachos', s => despachos = toArr(s).sort((a,b)=>b.ts-a.ts), isAdmin() ? null : r => r.orderByChild('ts').limitToLast(1500));
+  listen('despachos', s => despachos = toArr(s).sort((a,b)=>b.ts-a.ts), seeAll() ? null : r => r.orderByChild('ts').limitToLast(1500));
+  if(seeAll()) listen('entradas', s => entradas = toArr(s).sort((a,b)=>b.ts-a.ts));
   if(isAdmin()){
-    listen('entradas', s => entradas = toArr(s).sort((a,b)=>b.ts-a.ts));
     listen('users', s => usersList = toArr(s).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')));
   }
 }
 function stopListeners(){ refs.forEach(r => r.off()); refs = []; movData = {}; movSubs = {}; }
 function syncMov(){
-  if(isAdmin()) return;
+  if(seeAll()) return;
   tanques.filter(t => t.tipo === 'movil' && !movSubs[t.id]).forEach(t => {
     movSubs[t.id] = true;
     ['tanqueId','destTanqueId'].forEach(k => {
@@ -276,7 +279,7 @@ function syncMov(){
   });
 }
 function allDesp(){
-  if(isAdmin()) return despachos;
+  if(seeAll()) return despachos;
   const m = {}; despachos.forEach(d => m[d.id] = d);
   Object.values(movData).forEach(a => a.forEach(d => m[d.id] = d));
   return Object.values(m);
@@ -285,8 +288,9 @@ function allDesp(){
 /* ---------- Layout ---------- */
 function renderApp(){
   let tabs = isAdmin()
-    ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['reqs','Requerimientos'],['tanques','Tanques'],['flota','Vehículos'],['usuarios','Usuarios']]
-    : isMec() ? [['reqs','Requerimientos']] : [['cargar','Cargar combustible'],['reqs','Requerimientos']];
+    ? [['despachos','Despachos'],['stock','Stock'],['entradas','Entradas'],['cargar','Cargar'],['reqs','Solicitud mecánica'],['tanques','Tanques'],['flota','Equipos'],['usuarios','Usuarios']]
+    : isJE() ? [['despachos','Despachos'],['stock','Stock'],['cargar','Cargar'],['reqs','Solicitud mecánica']]
+    : isMec() ? [['reqs','Solicitud mecánica']] : [['cargar','Cargar combustible'],['reqs','Solicitud mecánica']];
   tabs = tabs.filter(t => t[0] !== 'reqs' || reqOn());
   $('app').innerHTML = `
     <header><div class="brand"><img src="${LOGO}" alt="Yaravi"><div><h1>Combustible <span>Yaravi</span></h1><div class="hsuc" id="hsuc"></div><div class="who">${esc(cur.nombre)} · ${roleTxt(cur.role)}</div></div></div>
@@ -298,7 +302,7 @@ function renderApp(){
 function setTab(t){ if(t === 'reqs' && !reqOn()) return; tab = t; renderApp(); }
 const TABS = {
   cargar:{form:formCargar, list:listMis},
-  reqs:{form:()=>canMng()?'':formReq(), list:()=>canMng()?listReqAdmin():listReqMis()},
+  reqs:{form:()=>reqForm()?formReq():'', list:()=>canMng()?listReqAdmin():listReqMis()},
   despachos:{form:()=>'', list:listDespachos},
   stock:{form:()=>'', list:listStock},
   entradas:{form:formEntrada, list:listEntradas},
@@ -310,7 +314,7 @@ function renderTab(){ const t = TABS[tab]; $('fa').innerHTML = t.form(); $('la')
 function afterForm(){
   if(tab==='cargar'){ lManual = false; initCargar(); }
   if(tab==='entradas'){ fillEntTank(); calcEntrada(); }
-  if(tab==='reqs' && !canMng()) initReq();
+  if(tab==='reqs' && reqForm()) initReq();
   updHeaderSuc(); updAlerts();
 }
 function refresh(){
@@ -321,7 +325,7 @@ function refresh(){
   if(!typing) $('la').innerHTML = TABS[tab].list();
   if(tab==='cargar'){ fillDeps(); onTank(); }
   if(tab==='entradas') fillEntTank();
-  if(tab==='reqs' && !canMng()) fillReqDeps();
+  if(tab==='reqs' && reqForm()) fillReqDeps();
   updReqBadge();
 }
 function updHeaderSuc(){
@@ -387,9 +391,9 @@ function formCargar(){
     <div class="fl"><select id="cs" onchange="onSuc()"></select><button class="btn sec small" id="cfs" onclick="favSuc()"></button></div>
 
     <label>¿A dónde va el combustible?</label>
-    <div class="seg"><button id="sg1" class="on" onclick="setDest('vehiculo')">Vehículo / máquina</button><button id="sg2" onclick="setDest('tanque')">Cargar tanque móvil</button></div>
+    <div class="seg"><button id="sg1" class="on" onclick="setDest('vehiculo')">Equipo / máquina</button><button id="sg2" onclick="setDest('tanque')">Cargar tanque móvil</button></div>
 
-    <div id="bveh"><label>Vehículo / máquina</label>
+    <div id="bveh"><label>Equipo / máquina</label>
       <div class="fl"><select id="cv"></select><button class="btn sec small" id="cfv" onclick="favVeh()"></button></div></div>
     <div id="bdt" style="display:none"><label>Tanque móvil que se carga</label><select id="cdt" onchange="updHint()"></select></div>
 
@@ -453,7 +457,7 @@ function favBtns(){
   if($('cfv')) $('cfv').textContent = (f.veh && f.veh === $('cv').value) ? '★ Favorita' : '☆ Favorita';
 }
 function favSuc(){ const s = $('cs').value; if(!s) return alert('Elegí primero la sucursal'); setFav({suc: getFav().suc === s ? '' : s}); favBtns(); }
-function favVeh(){ const v = $('cv').value; if(!v) return alert('Elegí primero el vehículo'); setFav({veh: getFav().veh === v ? '' : v}); favBtns(); }
+function favVeh(){ const v = $('cv').value; if(!v) return alert('Elegí primero el equipo'); setFav({veh: getFav().veh === v ? '' : v}); favBtns(); }
 function onTank(){
   const t = tanques.find(x => x.id === $('ct').value);
   if($('bcont')) $('bcont').style.display = (t && t.tipo === 'fijo') ? '' : 'none';
@@ -485,7 +489,7 @@ async function saveDespacho(){
   let veh = null, dtank = null;
   if(DEST === 'vehiculo'){
     veh = vehiculos.find(x => x.id === $('cv').value);
-    if(!veh) return err.textContent = 'Elegí el vehículo o máquina';
+    if(!veh) return err.textContent = 'Elegí el equipo o máquina';
   }else{
     dtank = tanques.find(x => x.id === $('cdt').value);
     if(!dtank) return err.textContent = 'Elegí el tanque móvil que se carga';
@@ -551,23 +555,46 @@ function listDespachos(){
   return sucBar() + `<div class="card"><h2>Filtros</h2><div class="row">
     <div><label>Desde</label><input type="date" value="${filt.desde}" onchange="setF('desde',this.value)"></div>
     <div><label>Hasta</label><input type="date" value="${filt.hasta}" onchange="setF('hasta',this.value)"></div></div>
-    <div class="row"><div><label>Vehículo</label><select onchange="setF('veh',this.value)"><option value="">Todos</option>${vs.map(v=>`<option value="${v.id}" ${filt.veh===v.id?'selected':''}>${esc(v.nombre)}</option>`).join('')}</select></div>
+    <div class="row"><div><label>Equipo</label><select onchange="setF('veh',this.value)"><option value="">Todos</option>${vs.map(v=>`<option value="${v.id}" ${filt.veh===v.id?'selected':''}>${esc(v.nombre)}</option>`).join('')}</select></div>
     <div><label>Sale del tanque</label><select onchange="setF('tanque',this.value)"><option value="">Todos</option>${tk.map(t=>`<option value="${t.id}" ${filt.tanque===t.id?'selected':''}>${esc(sucName(t.sucursalId))} — ${esc(t.nombre)} (${tipoTxt(t.tipo).toLowerCase()})</option>`).join('')}</select></div></div>
     <div class="flex" style="margin-top:12px"><button class="btn sec small" onclick="exportDespachos()">Exportar CSV</button></div></div>
   ${(()=>{ const t = tanques.find(x => x.id === filt.tanque); if(!t) return ''; const st = tankStats(t);
     return `<div class="kpis"><div class="kpi"><span>${esc(t.nombre)} · stock actual</span><b style="${st.stock<0?'color:var(--bad)':''}">${nf(st.stock,1)} L</b></div>
     <div class="kpi"><span>Recibido en total</span><b>${nf(t.tipo==='fijo'?st.ent+st.ini:st.rec+st.ini,1)}</b></div>
     <div class="kpi"><span>Entregado en total</span><b>${nf(st.sal,1)}</b></div></div>`; })()}
-  <div class="kpis"><div class="kpi"><span>Litros a vehículos</span><b>${nf(sum(aVeh,'litros'),1)}</b></div>
+  <div class="kpis"><div class="kpi"><span>Litros a equipos</span><b>${nf(sum(aVeh,'litros'),1)}</b></div>
     <div class="kpi"><span>Cargados a tanques móviles</span><b>${nf(sum(aTan,'litros'),1)}</b></div>
     <div class="kpi"><span>Despachos</span><b>${f.length}</b></div></div>
-  <div class="card"><h2>Consumo por vehículo${filt.tanque ? ' (del tanque elegido)' : ''}</h2>${ranking.length ? `<div class="tw"><table><tr><th>Vehículo</th><th class="n">Litros</th></tr>${ranking.map(r=>`<tr><td>${esc(r[0])}</td><td class="n">${nf(r[1],1)}</td></tr>`).join('')}</table></div>` : '<p class="hint">Sin datos.</p>'}</div>
+  <div class="card"><h2>Consumo por equipo${filt.tanque ? ' (del tanque elegido)' : ''}</h2>${ranking.length ? `<div class="tw"><table><tr><th>Equipo</th><th class="n">Litros</th></tr>${ranking.map(r=>`<tr><td>${esc(r[0])}</td><td class="n">${nf(r[1],1)}</td></tr>`).join('')}</table></div>` : '<p class="hint">Sin datos.</p>'}</div>
   <div class="card"><h2>Despachos (${f.length > 200 ? 'últimos 200 de ' + f.length : f.length})</h2><div class="tw"><table>
     <tr><th>Fecha</th><th>Sucursal</th><th>Operador</th><th>Destino</th><th>Sale de</th><th class="n">Litros</th><th class="n">Contador</th><th class="n">Hor/Km</th><th>Obs.</th><th></th></tr>
-    ${f.slice(0,200).map(d=>`<tr><td>${fdt(d.ts)}</td><td>${esc(d.sucursal||'-')}</td><td>${esc(d.operador)}</td><td>${esc(destLabel(d))}</td><td>${esc(origLabel(d))}</td><td class="n">${nf(d.litros,1)}</td><td class="n">${nf(d.contador,1)}</td><td class="n">${nf(d.horometro,1)}</td><td>${esc(d.obs)}</td><td><button class="btn danger small" onclick="delDespacho('${d.id}')">Borrar</button></td></tr>`).join('')}
+    ${f.slice(0,200).map(d=>`<tr><td>${fdt(d.ts)}</td><td>${esc(d.sucursal||'-')}</td><td>${esc(d.operador)}</td><td>${esc(destLabel(d))}${d.destEditadoTs ? ' <span class="pill warn">editado</span>' : ''}</td><td>${esc(origLabel(d))}</td><td class="n">${nf(d.litros,1)}</td><td class="n">${nf(d.contador,1)}</td><td class="n">${nf(d.horometro,1)}</td><td>${esc(d.obs)}</td><td>${isAdmin() ? `${d.destTipo !== 'tanque' ? `<button class="btn sec small" onclick="editDest('${d.id}')">Editar destino</button> ` : ''}<button class="btn danger small" onclick="delDespacho('${d.id}')">Borrar</button>` : ''}</td></tr>`).join('')}
   </table></div></div>`;
 }
-function delDespacho(id){ if(confirm('¿Borrar este despacho?')) db.ref('despachos/'+id).remove(); }
+function delDespacho(id){ if(!isAdmin()) return; if(confirm('¿Borrar este despacho?')) db.ref('despachos/'+id).remove(); }
+function editDest(id){
+  if(!isAdmin()) return;
+  const d = despachos.find(x => x.id === id); if(!d) return;
+  if(d.destTipo === 'tanque') return alert('Este despacho cargó un tanque móvil. Para corregirlo, borralo y volvé a cargarlo.');
+  const opt = v => `<option value="${v.id}" ${v.id === d.vehiculoId ? 'selected' : ''}>${esc(v.nombre)}${v.tipo ? ' (' + esc(v.tipo) + ')' : ''}</option>`;
+  openModal(`<h2>Editar destino del despacho</h2>
+    <p class="hint">${fdt(d.ts)} · ${esc(d.sucursal || '-')} · ${esc(d.operador)} · ${nf(d.litros,1)} L<br>Equipo actual: <b>${esc(destLabel(d))}</b></p>
+    <label>Equipo correcto</label><select id="md_v"><option value="">Elegir...</option>${vehiculos.map(opt).join('')}</select>
+    <div class="hint">Solo cambia el equipo. Los litros, el tanque de origen y el stock no se modifican. Queda marcado como editado.</div>
+    <div class="err" id="md_e"></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="saveDest('${id}')">Guardar</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button></div>`);
+}
+async function saveDest(id){
+  if(!isAdmin()) return;
+  const d = despachos.find(x => x.id === id); if(!d) return;
+  const v = vehiculos.find(x => x.id === $('md_v').value);
+  if(!v) return $('md_e').textContent = 'Elegí el equipo';
+  if(v.id === d.vehiculoId){ closeModal(); return; }
+  const upd = {vehiculoId:v.id, vehiculo:v.nombre, destEditadoTs:Date.now(), destEditadoPor:cur.nombre};
+  if(!d.destAnterior) upd.destAnterior = vName(d.vehiculoId, d.vehiculo);
+  try{ await db.ref('despachos/'+id).update(upd); closeModal(); }
+  catch(e){ $('md_e').textContent = 'No se pudo guardar: ' + e.message; }
+}
 function download(name, rows){
   const csv = rows.map(r => r.map(v => { v = String(v ?? ''); return /[",;\r\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }).join(';')).join('\r\n');
   const a = document.createElement('a');
@@ -575,7 +602,7 @@ function download(name, rows){
   a.download = name; a.click();
 }
 function exportDespachos(){
-  download('despachos.csv', [['Fecha','Sucursal','Operador','Destino','Tipo destino','Sale de (tanque)','Litros','Contador','Horometro/Km','Obs']].concat(filtered().map(d => [fdt(d.ts), d.sucursal||'', d.operador, destLabel(d), d.destTipo==='tanque'?'Tanque móvil':'Vehículo', origLabel(d), d.litros, d.contador, d.horometro, d.obs])));
+  download('despachos.csv', [['Fecha','Sucursal','Operador','Destino','Tipo destino','Sale de (tanque)','Litros','Contador','Horometro/Km','Obs']].concat(filtered().map(d => [fdt(d.ts), d.sucursal||'', d.operador, destLabel(d), d.destTipo==='tanque'?'Tanque móvil':'Equipo', origLabel(d), d.litros, d.contador, d.horometro, d.obs])));
 }
 
 /* ---------- Admin: stock ---------- */
@@ -602,7 +629,7 @@ function listStock(){
     <p class="hint">Stock = inicial + entradas + recibido − salidas. Cuando se carga un tanque móvil, esos litros salen del tanque fijo y entran al móvil; lo que el móvil le entrega a una máquina solo descuenta del móvil.</p>` : '<p class="hint">Todavía no hay tanques. Cargalos en la pestaña <b>Tanques</b>.</p>'}</div>
   ${(()=>{ const ac = {}; entAceFiltered().forEach(e => { const k = e.aceite + '|' + e.unidad; ac[k] = (ac[k]||0) + (e.cantidad||0); }); const rows = Object.entries(ac).sort();
     return `<div class="card"><h2>Aceites recibidos (acumulado)</h2>${rows.length ? `<div class="tw"><table><tr><th>Aceite</th><th>Unidad</th><th class="n">Cantidad total</th></tr>${rows.map(r => { const [a,u] = r[0].split('|'); return `<tr><td>${esc(a)}</td><td>${esc(u)}</td><td class="n"><b>${nf(r[1], r[1]%1?1:0)}</b></td></tr>`; }).join('')}</table></div>` : '<p class="hint">Todavía no hay entradas de aceites.</p>'}</div>`; })()}
-  ${sinSuc ? `<div class="card"><h2>Registros sin sucursal o tanque</h2><p class="hint">Hay ${sinSuc} registros anteriores (de pruebas) que no pertenecen a ningún tanque y no cuentan en el stock.</p><button class="btn danger small" onclick="purgeLegacy()">Borrar esos registros</button></div>` : ''}`;
+  ${(sinSuc && isAdmin()) ? `<div class="card"><h2>Registros sin sucursal o tanque</h2><p class="hint">Hay ${sinSuc} registros anteriores (de pruebas) que no pertenecen a ningún tanque y no cuentan en el stock.</p><button class="btn danger small" onclick="purgeLegacy()">Borrar esos registros</button></div>` : ''}`;
 }
 async function purgeLegacy(){
   if(!confirm('¿Borrar los despachos y entradas que no tienen sucursal o tanque? Esta acción no se puede deshacer.')) return;
@@ -795,7 +822,7 @@ function delTank(id){ if(confirm('¿Quitar este tanque? Los registros anteriores
 
 /* ---------- Admin: flota ---------- */
 function formFlota(){
-  return `<div class="card"><h2>Agregar vehículo / máquina</h2>
+  return `<div class="card"><h2>Agregar equipo / máquina</h2>
     <div class="row"><div><label>Nombre o patente</label><input id="fn"></div><div><label>Tipo (opcional)</label><input id="ft" placeholder="Camión, pala, tractor..."></div></div>
     <label>Sucursal donde trabaja</label><select id="fs"><option value="">Rota entre sucursales</option>${SUCS.map(s=>`<option value="${s.id}">${esc(s.nombre)}</option>`).join('')}</select>
     <div class="err" id="ferr"></div>
@@ -810,12 +837,12 @@ async function addVeh(){
   $('fn').value=''; $('ft').value=''; $('ferr').textContent='';
 }
 function listFlota(){
-  return `<div class="card"><h2>Vehículos (${vehiculos.length})</h2>${vehiculos.length ? `<div class="tw"><table><tr><th>Nombre</th><th>Tipo</th><th>Sucursal</th><th></th></tr>
-    ${vehiculos.map(v=>`<tr><td>${esc(v.nombre)}</td><td>${esc(v.tipo)}</td><td><select onchange="setBase('${v.id}',this.value)" style="padding:6px"><option value="">Rota</option>${SUCS.map(s=>`<option value="${s.id}" ${v.sucursalBase===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></td><td><button class="btn sec small" onclick="editVeh('${v.id}')">Editar</button> <button class="btn danger small" onclick="delVeh('${v.id}')">Quitar</button></td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste vehículos.</p>'}</div>`;
+  return `<div class="card"><h2>Equipos (${vehiculos.length})</h2>${vehiculos.length ? `<div class="tw"><table><tr><th>Nombre</th><th>Tipo</th><th>Sucursal</th><th></th></tr>
+    ${vehiculos.map(v=>`<tr><td>${esc(v.nombre)}</td><td>${esc(v.tipo)}</td><td><select onchange="setBase('${v.id}',this.value)" style="padding:6px"><option value="">Rota</option>${SUCS.map(s=>`<option value="${s.id}" ${v.sucursalBase===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></td><td><button class="btn sec small" onclick="editVeh('${v.id}')">Editar</button> <button class="btn danger small" onclick="delVeh('${v.id}')">Quitar</button></td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no cargaste equipos.</p>'}</div>`;
 }
 function editVeh(id){
   const v = vehiculos.find(x => x.id === id); if(!v) return;
-  openModal(`<h2>Editar vehículo</h2>
+  openModal(`<h2>Editar equipo</h2>
     <label>Nombre o patente</label><input id="mv_n" value="${esc(v.nombre)}">
     <label>Tipo</label><input id="mv_t" value="${esc(v.tipo||'')}">
     <label>Sucursal donde trabaja</label><select id="mv_s"><option value="">Rota entre sucursales</option>${SUCS.map(x=>`<option value="${x.id}" ${v.sucursalBase===x.id?'selected':''}>${esc(x.nombre)}</option>`).join('')}</select>
@@ -830,21 +857,24 @@ async function saveVeh(id){
   catch(e){ $('mv_e').textContent = 'No se pudo guardar: ' + e.message; }
 }
 function setBase(id, s){ db.ref('vehiculos/'+id+'/sucursalBase').set(s || null); }
-function delVeh(id){ if(confirm('¿Quitar este vehículo de la lista? Los despachos ya registrados se conservan.')) db.ref('vehiculos/'+id).remove(); }
+function delVeh(id){ if(confirm('¿Quitar este equipo de la lista? Los despachos ya registrados se conservan.')) db.ref('vehiculos/'+id).remove(); }
 
 /* ---------- Admin: usuarios ---------- */
 function formUsuarios(){
   return `<div class="card"><h2>Alta de usuarios</h2>
-    <p class="hint">Pegá los nombres, uno por línea (ej: <i>Juan Pérez</i>). El usuario se genera solo (ej: <i>juan.perez</i>) y todos arrancan con la contraseña que elijas acá.</p>
-    <label>Nombres</label><textarea id="un" rows="6"></textarea>
-    <label>Rol</label><select id="ur"><option value="operador">Operador</option><option value="mecanico">Jefe de mecánicos</option><option value="admin">Administrador</option></select>
+    <p class="hint">Pegá los nombres, uno por línea (ej: <i>Juan Pérez</i>). Si querés, agregá el correo después de una coma (ej: <i>Juan Pérez, juan@correo.com</i>). El usuario se genera solo (ej: <i>juan.perez</i>) y todos arrancan con la contraseña que elijas acá.</p>
+    <label>Nombres (y correo, opcional)</label><textarea id="un" rows="6"></textarea>
+    <label>Rol</label><select id="ur"><option value="operador">Operador</option><option value="mecanico">Jefe de mecánicos</option><option value="jefeequipos">Jefe de equipos</option><option value="admin">Administrador</option></select>
     <label>Contraseña inicial (mínimo 6 caracteres)</label><input id="up">
     <div class="err" id="uerr"></div>
     <button class="btn block" style="margin-top:12px" id="ubtn" onclick="bulkUsers()">Crear usuarios</button>
     <pre class="out" id="uout" style="display:none"></pre></div>`;
 }
 async function bulkUsers(){
-  const names = $('un').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const names = $('un').value.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+    const m = line.match(/^(.*?)[,;\t]\s*([^\s,;]+@[^\s,;]+\.[^\s,;]+)\s*$/);
+    return m && m[1].trim() ? {nombre:m[1].trim(), email:m[2].toLowerCase()} : {nombre:line, email:''};
+  });
   const pw = $('up').value;
   const err = $('uerr'); err.textContent = '';
   if(!names.length) return err.textContent = 'Pegá al menos un nombre';
@@ -852,7 +882,7 @@ async function bulkUsers(){
   $('ubtn').disabled = true;
   const out = $('uout'); out.style.display = 'block'; out.textContent = '';
   const taken = new Set(usersList.map(u => u.username));
-  for(const nombre of names){
+  for(const {nombre, email} of names){
     let base = norm(nombre) || 'operador', u = base, i = 2;
     while(taken.has(u)) u = base + i++;
     taken.add(u);
@@ -860,17 +890,33 @@ async function bulkUsers(){
       const c = await sauth.createUserWithEmailAndPassword(emailFor(u), pw);
       const uid = c.user.uid;
       await sauth.signOut();
-      await db.ref('users/'+uid).set({username:u, nombre, role:$('ur').value, creado:Date.now()});
-      out.textContent += `✓ ${nombre} → usuario: ${u}\n`;
+      const rec = {username:u, nombre, role:$('ur').value, creado:Date.now()}; if(email) rec.email = email;
+      await db.ref('users/'+uid).set(rec);
+      out.textContent += `✓ ${nombre} → usuario: ${u}${email ? ' · correo: ' + email : ''}\n`;
     }catch(e){ out.textContent += `✗ ${nombre}: ${authErr(e)}\n`; }
   }
   out.textContent += `\nContraseña inicial: ${pw}`;
   $('ubtn').disabled = false;
 }
 function listUsuarios(){
-  return `<div class="card"><h2>Usuarios (${usersList.length})</h2><div class="tw"><table><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th></th></tr>
-    ${usersList.map(u=>`<tr><td>${esc(u.nombre)}</td><td>${esc(u.username)}</td><td>${u.id===cur.uid?roleTxt(u.role):`<select style="padding:6px" onchange="setRole('${u.id}',this.value)">${[['operador','Operador'],['mecanico','Jefe de mecánicos'],['admin','Administrador']].map(r=>`<option value="${r[0]}" ${u.role===r[0]?'selected':''}>${r[1]}</option>`).join('')}</select>`}</td><td>${u.id===cur.uid?'':`<button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
+  return `<div class="card"><h2>Usuarios (${usersList.length})</h2><div class="tw"><table><tr><th>Nombre</th><th>Usuario</th><th>Correo</th><th>Rol</th><th></th></tr>
+    ${usersList.map(u=>`<tr><td>${esc(u.nombre)}</td><td>${esc(u.username)}</td><td>${esc(u.email || '')} <button class="btn sec small" onclick="editEmail('${u.id}')">${u.email ? 'Cambiar' : 'Agregar'}</button></td><td>${u.id===cur.uid?roleTxt(u.role):`<select style="padding:6px" onchange="setRole('${u.id}',this.value)">${[['operador','Operador'],['mecanico','Jefe de mecánicos'],['jefeequipos','Jefe de equipos'],['admin','Administrador']].map(r=>`<option value="${r[0]}" ${u.role===r[0]?'selected':''}>${r[1]}</option>`).join('')}</select>`}</td><td>${u.id===cur.uid?'':`<button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
     <p class="hint">"Quitar acceso" bloquea al usuario en la app. Su cuenta puede borrarse del todo desde la consola de Firebase (Authentication).</p></div>`;
+}
+function editEmail(id){
+  const u = usersList.find(x => x.id === id); if(!u) return;
+  openModal(`<h2>Correo de ${esc(u.nombre)}</h2>
+    <label>Correo electrónico</label><input id="me_v" type="email" autocapitalize="none" value="${esc(u.email || '')}" placeholder="nombre@correo.com">
+    <div class="hint">Es un dato de contacto. No cambia el usuario ni la contraseña para ingresar. Dejalo vacío para quitarlo.</div>
+    <div class="err" id="me_e"></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="saveEmail('${id}')">Guardar</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button></div>`);
+}
+async function saveEmail(id){
+  if(!isAdmin()) return;
+  const v = $('me_v').value.trim().toLowerCase();
+  if(v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return $('me_e').textContent = 'El correo no parece válido';
+  try{ await db.ref('users/'+id+'/email').set(v || null); closeModal(); }
+  catch(e){ $('me_e').textContent = 'No se pudo guardar: ' + e.message; }
 }
 function setRole(id, nr){
   const u = usersList.find(x => x.id === id); if(!u) return;
@@ -891,7 +937,7 @@ function bigOk(title, sub){
 }
 function closeBigOk(){ const m = $('bigok'); if(m) m.style.display = 'none'; clearTimeout(bigT); }
 
-/* ---------- Requerimientos de unidades ---------- */
+/* ---------- Solicitud mecánica de unidades ---------- */
 const REQ_TIPOS = ['Cubiertas','Vidrio roto','Falla mecánica','Falla eléctrica','Frenos','Luces','Mangueras / hidráulico','Otro'];
 const URG_TXT = {baja:'Baja', media:'Media', alta:'Alta'};
 const URG_RANK = {alta:0, media:1, baja:2};
@@ -899,18 +945,18 @@ const REQ_STAGES = [['leido','Enterado'],['revisado','Revisado por el mecánico'
 const reqStage = r => r.reparado ? 'reparado' : r.revisado ? 'revisado' : r.leido ? 'leido' : 'pendiente';
 const reqPill = r => { const s = reqStage(r); return s === 'reparado' ? '<span class="pill ok">Reparado</span>' : s === 'revisado' ? '<span class="pill warn">Revisado</span>' : s === 'leido' ? '<span class="pill warn">Enterado</span>' : '<span class="pill bad">Pendiente</span>'; };
 const urgPill = u => `<span class="pill ${u === 'alta' ? 'bad' : u === 'media' ? 'warn' : 'ok'}">Urgencia ${URG_TXT[u] || 'media'}</span>`;
-function reqTabLabel(){ if(!canMng()) return 'Requerimientos'; const n = reqs.filter(r => !r.leido).length; return 'Requerimientos' + (n ? ' (' + n + ')' : ''); }
+function reqTabLabel(){ if(!canMng()) return 'Solicitud mecánica'; const n = reqs.filter(r => !r.leido).length; return 'Solicitud mecánica' + (n ? ' (' + n + ')' : ''); }
 function updReqBadge(){ const b = $('tab_reqs'); if(b) b.textContent = reqTabLabel(); }
 
 function formReq(){
-  return `<div class="card"><h2>Nuevo requerimiento</h2>
+  return `<div class="card"><h2>Nueva solicitud mecánica</h2>
     <label>Sucursal</label><select id="rs" onchange="fillReqDeps();updHeaderSuc()"></select>
-    <label>Unidad (vehículo / máquina)</label><select id="rv"></select>
+    <label>Unidad (equipo / máquina)</label><select id="rv"></select>
     <div class="row"><div><label>Qué necesita</label><select id="rt">${REQ_TIPOS.map(t => `<option>${t}</option>`).join('')}</select></div>
     <div><label>Urgencia</label><select id="ru"><option value="baja">Baja</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></div></div>
     <label>Detalle (qué le falta o qué falla tiene, y en qué parte)</label><textarea id="rd" rows="3" placeholder="Ej: falla en el sistema hidráulico, pierde aceite del cilindro izquierdo"></textarea>
     <div class="err" id="rerr"></div>
-    <button class="btn block" style="margin-top:12px" id="rbtn" onclick="saveReq()">Enviar requerimiento</button></div>`;
+    <button class="btn block" style="margin-top:12px" id="rbtn" onclick="saveReq()">Enviar solicitud mecánica</button></div>`;
 }
 function initReq(){
   const fav = getFav();
@@ -940,7 +986,7 @@ async function saveReq(){
   try{
     await db.ref('requerimientos').push(rec);
     $('rd').value = '';
-    bigOk('REQUERIMIENTO ENVIADO', v.nombre + ' · ' + tipo);
+    bigOk('SOLICITUD MECÁNICA ENVIADA', v.nombre + ' · ' + tipo);
   }catch(e){ err.textContent = 'No se pudo enviar: ' + e.message; }
   $('rbtn').disabled = false;
 }
@@ -949,7 +995,7 @@ function stagesHtml(r){
 }
 function listReqMis(){
   const mis = reqs.filter(r => r.uid === cur.uid).slice(0, 15);
-  return `<div class="card"><h2>Mis requerimientos</h2>${mis.length ? mis.map(r => `<div style="border-top:1px solid var(--line);padding:10px 0">
+  return `<div class="card"><h2>Mis solicitudes mecánicas</h2>${mis.length ? mis.map(r => `<div style="border-top:1px solid var(--line);padding:10px 0">
     <div class="flex" style="justify-content:space-between"><b>${esc(r.vehiculo)}</b>${reqPill(r)}</div>
     <div class="hint">${fdt(r.ts)} · ${esc(r.sucursal || '')} · ${esc(r.tipo)}</div>
     <div style="margin-top:4px">${esc(r.desc)}</div>
@@ -973,7 +1019,7 @@ function listReqAdmin(){
     <label>Observaciones del mecánico</label><textarea id="ro_${r.id}" rows="2">${esc(r.obsMec || '')}</textarea>
     <div class="flex" style="margin-top:8px"><button class="btn small" onclick="saveObs('${r.id}',this)">Guardar observación</button>
     <button class="btn sec small" onclick="printReq('${r.id}')">Imprimir</button>
-    ${isAdmin() ? `<button class="btn danger small" onclick="delReq('${r.id}')">Borrar</button>` : ''}</div></div>`).join('') : '<div class="card"><p class="hint">No hay requerimientos en esta vista.</p></div>');
+    ${isAdmin() ? `<button class="btn danger small" onclick="delReq('${r.id}')">Borrar</button>` : ''}</div></div>`).join('') : '<div class="card"><p class="hint">No hay solicitudes mecánicas en esta vista.</p></div>');
 }
 async function toggleStage(id, key){
   const r = reqs.find(x => x.id === id); if(!r) return;
@@ -995,7 +1041,7 @@ async function saveObs(id, btn){
     if(btn){ const o = btn.textContent; btn.textContent = '✓ Guardada'; setTimeout(() => { btn.textContent = o; }, 1800); }
   }catch(e){ alert('No se pudo guardar: ' + e.message); }
 }
-function delReq(id){ if(confirm('¿Borrar este requerimiento?')) db.ref('requerimientos/' + id).remove(); }
+function delReq(id){ if(confirm('¿Borrar esta solicitud mecánica?')) db.ref('requerimientos/' + id).remove(); }
 function printReq(id){
   const r = reqs.find(x => x.id === id); if(!r) return;
   const w = window.open('', '_blank');
@@ -1003,7 +1049,7 @@ function printReq(id){
   const st = o => o ? 'Sí — ' + fdt(o.ts) + ' (' + esc(o.por) + ')' : 'No';
   const row = (a, b) => `<tr><th>${a}</th><td>${b}</td></tr>`;
   const n = esc(r.id.slice(-6).toUpperCase());
-  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Requerimiento ${n}</title><style>
+  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Solicitud mecánica ${n}</title><style>
     body{font-family:Arial,Helvetica,sans-serif;color:#000;margin:28px}
     h1{font-size:20px;margin:0 0 2px}.sub{color:#555;margin:0 0 16px;font-size:13px}
     table{width:100%;border-collapse:collapse;margin-bottom:14px}
@@ -1012,7 +1058,7 @@ function printReq(id){
     .box{border:1px solid #999;min-height:100px;padding:8px;font-size:14px;white-space:pre-wrap;margin-top:6px}
     .firmas{display:flex;gap:40px;margin-top:60px}.firmas div{flex:1;border-top:1px solid #000;padding-top:4px;font-size:12px;text-align:center}
   </style></head><body>
-    <h1>Industrias Yarávi — Requerimiento de unidad</h1>
+    <h1>Industrias Yarávi — Solicitud mecánica de unidad</h1>
     <p class="sub">N° ${n} · Impreso el ${fdt(Date.now())}</p>
     <table>
       ${row('Fecha', fdt(r.ts))}${row('Sucursal', esc(r.sucursal || '-'))}${row('Unidad', esc(r.vehiculo))}
