@@ -1072,7 +1072,135 @@ function printReq(id){
   w.document.close(); w.focus(); setTimeout(() => w.print(), 300);
 }
 
-/* ---------- Arranque ---------- */
+
+  /* ---------- Entrada con varios combustibles (misma pesada y remito) ---------- */
+function formEntrada(){
+  const hoy = dayKey(Date.now());
+  return `<div class="card"><h2>Nueva entrada</h2>
+    <div class="row"><div><label>Sucursal</label><select id="es" onchange="fillEntTank()"><option value="">Elegir...</option>${SUCS.map(s=>`<option value="${s.id}" ${admSuc===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></div>
+    <div><label>Tipo de entrada</label><select id="ec" onchange="onEntComb()"><option value="comb">Combustible (uno o varios)</option><option value="aceite">Aceites / lubricantes</option></select></div></div>
+    <div class="row"><div><label>Fecha</label><input id="ef" type="date" value="${hoy}"></div>
+    <div><label>N° de remito</label><input id="er"></div></div>
+    <div id="ecombf">
+    <label>Combustibles recibidos (según remito)</label>
+    <div id="elines"></div>
+    <button class="btn sec small" onclick="addEntLine()">+ Agregar otro combustible / tanque</button>
+    <div class="hint" id="etot" style="margin-bottom:6px"></div>
+    <div class="row"><div><label>Pesada de entrada (kg, camión cargado)</label><input id="epe" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div>
+    <div><label>Pesada de salida (kg, camión vacío)</label><input id="eps" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div></div>
+    <label>Densidad (kg por litro)</label><input id="ed" type="number" step="any" value="${DENS_DEFAULT}" oninput="calcEntrada()" style="max-width:140px">
+    <div class="calc" id="ecalc"></div></div>
+    <div id="eace" style="display:none">
+      <label>Tipo de aceite</label><select id="eat" onchange="onAceTipo()">${ACEITES.map(a=>`<option>${a}</option>`).join('')}</select>
+      <div id="eaoWrap" style="display:none"><label>¿Cuál?</label><input id="eao" placeholder="Ej: Aceite de dirección"></div>
+      <div class="row"><div><label>Cantidad</label><input id="eaq" type="number" inputmode="decimal" step="any"></div>
+      <div><label>Unidad</label><select id="eau"><option value="tambores">Tambores</option><option value="latas">Latas</option><option value="litros">Litros</option></select></div></div>
+      <label>Observaciones (opcional)</label><input id="eaobs">
+      <div class="hint">El N° de remito es opcional para aceites.</div>
+    </div>
+    <div class="err" id="eerr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="saveEntrada()">Guardar entrada</button></div>`;
+}
+function afterForm(){
+  if(tab==='cargar'){ lManual = false; initCargar(); }
+  if(tab==='entradas'){ if(!$('elines').children.length) addEntLine('comun'); fillEntTank(); calcEntrada(); }
+  if(tab==='reqs' && reqForm()) initReq();
+  updHeaderSuc(); updAlerts();
+}
+function onEntComb(){
+  const a = $('ec').value === 'aceite';
+  $('ecombf').style.display = a ? 'none' : '';
+  $('eace').style.display = a ? '' : 'none';
+}
+function addEntLine(comb){
+  const box = $('elines'); if(!box) return;
+  const d = document.createElement('div');
+  d.className = 'eline';
+  d.style.cssText = 'border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px';
+  d.innerHTML = `<div class="row"><div><label>Combustible</label><select class="elc" onchange="fillEntTank()"><option value="comun">Gasoil común</option><option value="premium">Gasoil premium</option></select></div>
+    <div><label>Tanque que se llena</label><select class="elt"></select></div></div>
+    <div class="fl" style="margin-top:4px"><div style="flex:1"><label>Litros según remito</label><input class="ell" type="number" inputmode="decimal" step="any" oninput="calcEntrada()"></div>
+    <button class="btn danger small" style="margin-top:22px" onclick="delEntLine(this)">Quitar</button></div>`;
+  box.appendChild(d);
+  if(comb) d.querySelector('.elc').value = comb;
+  fillEntTank(); calcEntrada();
+}
+function delEntLine(b){
+  const box = $('elines');
+  if(box.children.length <= 1) return;
+  b.closest('.eline').remove(); calcEntrada();
+}
+function fillEntTank(){
+  const es = $('es'), box = $('elines'); if(!es || !box) return;
+  box.querySelectorAll('.eline').forEach(l => {
+    const comb = l.querySelector('.elc').value, et = l.querySelector('.elt'), prev = et.value;
+    const ts = tanksOf(es.value).filter(t => combOf(t) === comb);
+    et.innerHTML = !es.value ? '<option value="">Elegí la sucursal</option>'
+      : ts.length ? ts.map(t => `<option value="${t.id}">${tipoTxt(t.tipo)}: ${esc(t.nombre)}</option>`).join('')
+      : '<option value="">No hay tanques de gasoil ' + (comb==='premium'?'premium':'común') + ' en esta sucursal</option>';
+    if(ts.some(t => t.id === prev)) et.value = prev;
+    else { const fx = ts.find(t => t.tipo === 'fijo'); if(fx) et.value = fx.id; }
+  });
+}
+function entLines(){
+  return [...document.querySelectorAll('#elines .eline')].map(l => ({
+    tank: tanques.find(x => x.id === l.querySelector('.elt').value),
+    litros: num(l.querySelector('.ell').value)
+  }));
+}
+function calcEntrada(){
+  const el = $('ecalc'); if(!el) return;
+  const tot = entLines().reduce((a,x) => a + (x.litros || 0), 0);
+  if($('etot')) $('etot').innerHTML = 'Total según remito: <b>' + nf(tot,1) + ' L</b>';
+  const r = entCalc(num($('epe').value), num($('eps').value), num($('ed').value), tot > 0 ? tot : null);
+  if(!r){ el.innerHTML = '<span class="hint">Completá las dos pesadas para ver el cálculo.</span>'; return; }
+  el.innerHTML = `Neto: <b>${nf(r.neto,0)} kg</b><br>Litros según pesada: <b>${nf(r.lp,1)} L</b>` +
+    (r.diff!=null ? `<br>Diferencia vs remito (total): <b>${r.diff>0?'+':''}${nf(r.diff,1)} L</b> ${pctPill(r.pct)}` : '');
+}
+async function saveEntradaComb(){
+  const suc = $('es').value, f = $('ef').value, rem = $('er').value.trim();
+  const pe = num($('epe').value), ps = num($('eps').value), d = num($('ed').value);
+  const err = $('eerr'); err.textContent = '';
+  const ls = entLines();
+  if(!suc) return err.textContent = 'Elegí la sucursal';
+  if(!f || !rem || pe==null || ps==null || !d) return err.textContent = 'Completá todos los campos';
+  if(ls.some(x => !x.tank)) return err.textContent = 'Elegí el tanque en cada línea';
+  if(ls.some(x => x.litros==null || x.litros<=0)) return err.textContent = 'Anotá los litros de cada línea';
+  if(pe <= ps) return err.textContent = 'La pesada de entrada debe ser mayor que la de salida';
+  const m = {};
+  ls.forEach(x => { const k = x.tank.id; m[k] = m[k] || {tanqueId:k, tanque:x.tank.nombre, combustible:combOf(x.tank), litros:0}; m[k].litros += x.litros; });
+  const items = Object.values(m);
+  const lr = items.reduce((a,i) => a + i.litros, 0);
+  const r = entCalc(pe, ps, d, lr);
+  const [y,mm,dd] = f.split('-').map(Number);
+  try{
+    await db.ref('entradas').push({ts:new Date(y,mm-1,dd,12).getTime(), fecha:f, sucursalId:suc, sucursal:sucName(suc), tanqueId:items[0].tanqueId, tanque:items[0].tanque, combustible:items[0].combustible, items, remito:rem, litrosRemito:lr, pesoEntrada:pe, pesoSalida:ps, densidad:d, neto:r.neto, litrosPesada:r.lp, diff:r.diff, pct:r.pct, por:cur.nombre});
+    renderTab();
+    bigOk('ENTRADA GUARDADA', items.map(i => i.tanque + ' ' + nf(i.litros,0) + ' L').join(' · '));
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+function tankStats(t){
+  const ini = t.stockInicial || 0;
+  const ent = entradas.reduce((a,e) => a + (isAce(e) ? 0 : e.items ? sum(e.items.filter(i => i.tanqueId === t.id),'litros') : (e.tanqueId === t.id ? (e.litrosRemito||0) : 0)), 0);
+  const A = allDesp();
+  const rec = sum(A.filter(d => d.destTanqueId === t.id), 'litros');
+  const sal = sum(A.filter(d => d.tanqueId === t.id), 'litros');
+  const tras = sum(A.filter(d => d.tanqueId === t.id && d.destTipo === 'tanque'), 'litros');
+  return {ini, ent, rec, sal, tras, stock: ini + ent + rec - sal};
+}
+const entTanques = e => e.items ? e.items.map(i => esc(tName(i.tanqueId,i.tanque)) + ': ' + nf(i.litros,1) + ' L').join('<br>') : esc(e.tanque||'-');
+const entCombTxt = e => e.items ? [...new Set(e.items.map(i => combTxt(i.combustible)))].join(' + ') : combTxt(entComb(e));
+function listEntradasComb(){
+  const es = entFiltered();
+  return sucBar() + `<div class="card"><h2>Entradas registradas</h2><div class="flex" style="margin-bottom:10px"><button class="btn sec small" onclick="exportEntradas()">Exportar CSV</button></div>
+    ${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Tanque</th><th>Combustible</th><th>Remito</th><th class="n">L remito</th><th class="n">Entrada kg</th><th class="n">Salida kg</th><th class="n">Neto kg</th><th class="n">L pesada</th><th class="n">Dif. L</th><th>Dif. %</th><th></th></tr>
+    ${es.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.sucursal||'-')}</td><td>${entTanques(e)}</td><td>${entCombTxt(e)}</td><td>${esc(e.remito)}</td><td class="n">${nf(e.litrosRemito,1)}</td><td class="n">${nf(e.pesoEntrada)}</td><td class="n">${nf(e.pesoSalida)}</td><td class="n">${nf(e.neto)}</td><td class="n">${nf(e.litrosPesada,1)}</td><td class="n">${e.diff==null?'-':(e.diff>0?'+':'')+nf(e.diff,1)}</td><td>${pctPill(e.pct)}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
+    </table></div>` : '<p class="hint">Todavía no hay entradas.</p>'}</div>`;
+}
+function exportEntradas(){
+  download('entradas.csv', [['Fecha','Sucursal','Tanque','Combustible','Remito','Litros remito','Pesada entrada kg','Pesada salida kg','Neto kg','Densidad','Litros pesada','Diferencia L','Diferencia %']].concat(entFiltered().map(e => [e.fecha, e.sucursal||'', e.items ? e.items.map(i => i.tanque + ': ' + i.litros).join(' | ') : (e.tanque||''), entCombTxt(e), e.remito, e.litrosRemito, e.pesoEntrada, e.pesoSalida, e.neto, e.densidad, (e.litrosPesada||0).toFixed(1), e.diff==null?'':e.diff.toFixed(1), e.pct==null?'':e.pct.toFixed(2)])));
+}
+  /* ---------- Arranque ---------- */
 (function boot(){
   const cfg = getCfg();
   if(!cfg){ renderConfig(); return; }
