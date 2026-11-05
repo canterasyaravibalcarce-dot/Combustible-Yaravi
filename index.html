@@ -554,28 +554,42 @@ function rateInfo(arr){
   const lit = sum(a.slice(1), 'litros');
   return {delta, lit, rate: lit / delta};
 }
-function consumoCard(aVeh){
+function consumoRows(aVeh){
   const g = {};
   aVeh.forEach(d => { const k = d.vehiculoId || d.vehiculo; (g[k] = g[k] || []).push(d); });
   const cmp = !!(filt.desde || filt.hasta);
-  const rows = Object.keys(g).map(k => {
+  return Object.keys(g).map(k => {
     const arr = g[k], v = vehiculos.find(x => x.id === k), km = usaKm(v);
     const lit = sum(arr, 'litros'), ri = rateInfo(arr);
     const hist = cmp ? rateInfo(despachos.filter(d => d.destTipo !== 'tanque' && (d.vehiculoId || d.vehiculo) === k)) : null;
-    return {nombre: vName(arr[0].vehiculoId, arr[0].vehiculo), km, lit, n: arr.length, avg: lit / arr.length, ri, hist, last: Math.max(...arr.map(d => d.ts))};
+    const vsPct = (ri && hist) ? (ri.rate / hist.rate - 1) * 100 : null;
+    return {nombre: vName(arr[0].vehiculoId, arr[0].vehiculo), km, lit, n: arr.length, avg: lit / arr.length, ri, vsPct, last: Math.max(...arr.map(d => d.ts))};
   }).sort((a,b) => b.lit - a.lit);
+}
+function consumoCard(aVeh){
+  const rows = consumoRows(aVeh);
   const body = rows.map(r => {
     const rate = r.ri ? (r.km ? nf(r.ri.rate*100,1) + ' L/100 km' : nf(r.ri.rate,1) + ' L/h') : '-';
     const work = r.ri ? nf(r.ri.delta,0) + (r.km ? ' km' : ' h') : '-';
-    let vs = '-';
-    if(r.ri && r.hist){ const p = (r.ri.rate / r.hist.rate - 1) * 100; vs = `<span class="pill ${p > 15 ? 'bad' : p > 5 ? 'warn' : 'ok'}">${p > 0 ? '▲' : '▼'} ${nf(Math.abs(p),0)}%</span>`; }
+    const p = r.vsPct;
+    const vs = p == null ? '-' : `<span class="pill ${p > 15 ? 'bad' : p > 5 ? 'warn' : 'ok'}">${p > 0 ? '▲' : '▼'} ${nf(Math.abs(p),0)}%</span>`;
     return `<tr><td>${esc(r.nombre)}</td><td class="n">${nf(r.lit,1)}</td><td class="n">${r.n}</td><td class="n">${work}</td><td class="n"><b>${rate}</b></td><td class="n">${nf(r.avg,1)}</td><td class="n">${vs}</td><td>${fdt(r.last)}</td></tr>`;
   }).join('');
   return `<div class="card"><h2>Consumo por equipo${filt.tanque ? ' (del tanque elegido)' : ''}</h2>${rows.length ? `<div class="tw"><table>
     <tr><th>Equipo</th><th class="n">Litros</th><th class="n">Cargas</th><th class="n">Horas / km</th><th class="n">Consumo aprox.</th><th class="n">L por carga</th><th class="n">Vs. su promedio</th><th>Última carga</th></tr>${body}</table></div>
     <p class="hint">Consumo = litros cargados (sin contar la primera carga del período) ÷ horas o km recorridos entre la primera y la última lectura. Necesita al menos 2 cargas con horómetro. "Vs. su promedio" compara con el consumo histórico del equipo y aparece al filtrar por fechas; rojo = más de 15% por encima.</p>` : '<p class="hint">Sin datos.</p>'}</div>`;
 }
-function listDespachos(){
+function exportConsumo(){
+  const aVeh = filtered().filter(d => d.destTipo !== 'tanque');
+  const head = ['Equipo','Litros','Cargas','Horas o km recorridos','Unidad','Consumo (L/h o L/100km)','L por carga','Vs su promedio %','Última carga'];
+  download('consumo-por-equipo.csv', [head].concat(consumoRows(aVeh).map(r => [
+    r.nombre, r.lit.toFixed(1), r.n,
+    r.ri ? r.ri.delta.toFixed(0) : '', r.km ? 'km' : 'h',
+    r.ri ? (r.km ? (r.ri.rate*100).toFixed(1) : r.ri.rate.toFixed(1)) : '',
+    r.avg.toFixed(1), r.vsPct == null ? '' : r.vsPct.toFixed(0), fdt(r.last)
+  ])));
+}
+  function listDespachos(){
   const f = filtered();
   const aVeh = f.filter(d => d.destTipo !== 'tanque');
   const aTan = f.filter(d => d.destTipo === 'tanque');
@@ -589,7 +603,7 @@ function listDespachos(){
     <div><label>Hasta</label><input type="date" value="${filt.hasta}" onchange="setF('hasta',this.value)"></div></div>
     <div class="row"><div><label>Equipo</label><select onchange="setF('veh',this.value)"><option value="">Todos</option>${vs.map(v=>`<option value="${v.id}" ${filt.veh===v.id?'selected':''}>${esc(v.nombre)}</option>`).join('')}</select></div>
     <div><label>Sale del tanque</label><select onchange="setF('tanque',this.value)"><option value="">Todos</option>${tk.map(t=>`<option value="${t.id}" ${filt.tanque===t.id?'selected':''}>${esc(sucName(t.sucursalId))} — ${esc(t.nombre)} (${tipoTxt(t.tipo).toLowerCase()})</option>`).join('')}</select></div></div>
-    <div class="flex" style="margin-top:12px"><button class="btn sec small" onclick="exportDespachos()">Exportar CSV</button></div></div>
+        <div class="flex" style="margin-top:12px"><button class="btn sec small" onclick="exportDespachos()">Exportar CSV</button><button class="btn sec small" onclick="exportConsumo()">Exportar consumo CSV</button></div></div>
   ${(()=>{ const t = tanques.find(x => x.id === filt.tanque); if(!t) return ''; const st = tankStats(t);
     return `<div class="kpis"><div class="kpi"><span>${esc(t.nombre)} · stock actual</span><b style="${st.stock<0?'color:var(--bad)':''}">${nf(st.stock,1)} L</b></div>
     <div class="kpi"><span>Recibido en total</span><b>${nf(t.tipo==='fijo'?st.ent+st.ini:st.rec+st.ini,1)}</b></div>
