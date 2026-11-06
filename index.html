@@ -1541,6 +1541,216 @@ function listFlota(){
 }
 TABS.flota.list = listFlota;
 </script>
+<!-- ===== PEGAR ESTE BLOQUE COMPLETO justo antes de </body> (después del último </script>) ===== -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<script>
+/* ================= QR: generar (Equipos y Tanques) ================= */
+const QRP = 'YARAVI:';
+let _qrc = null, _qrName = '';
+function qrCanvas(text, label, sub){
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const n = q.getModuleCount(), s = 10, m = 4*s, W = n*s + 2*m, H = W + 110;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0,0,W,H); x.fillStyle = '#000';
+  for(let r=0;r<n;r++) for(let k=0;k<n;k++) if(q.isDark(r,k)) x.fillRect(m+k*s, m+r*s, s, s);
+  x.textAlign = 'center';
+  let fs = 56; x.font = 'bold ' + fs + 'px Arial';
+  while(x.measureText(label).width > W - 30 && fs > 16){ fs -= 2; x.font = 'bold ' + fs + 'px Arial'; }
+  x.fillText(label, W/2, W + 20);
+  if(sub){ x.font = '26px Arial'; x.fillStyle = '#444'; x.fillText(sub, W/2, W + 70); }
+  return c;
+}
+function qrShow(kind, id){
+  const it = kind === 'E' ? vehiculos.find(v => v.id === id) : tanques.find(t => t.id === id);
+  if(!it) return;
+  const sub = kind === 'E' ? 'Equipo · Combustible Yaravi' : tipoTxt(it.tipo) + ' · ' + sucName(it.sucursalId) + (combOf(it)==='premium' ? ' · PREMIUM' : '');
+  _qrc = qrCanvas(QRP + kind + ':' + id, it.nombre, sub);
+  _qrName = 'QR-' + it.nombre.replace(/[^a-zA-Z0-9]+/g,'-').replace(/^-|-$/g,'') + '.png';
+  openModal(`<h2>QR · ${esc(it.nombre)}</h2><div style="text-align:center"><img src="${_qrc.toDataURL('image/png')}" style="width:100%;max-width:300px;border:1px solid var(--line)"></div>
+    <div class="hint">Descargalo e imprimilo las veces que haga falta. Siempre se genera el mismo código.</div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="qrDownload()">Descargar imagen</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cerrar</button></div>`);
+}
+function qrDownload(){
+  if(!_qrc) return;
+  const a = document.createElement('a'); a.href = _qrc.toDataURL('image/png'); a.download = _qrName; a.click();
+}
+function listFlota(){
+  return `<div class="card"><h2>Equipos (${vehiculos.length})</h2>${vehiculos.length ? `<div class="tw"><table><tr><th>Nombre</th><th>Tipo</th><th>Sucursal</th><th>Se mide en</th><th></th></tr>
+    ${vehiculos.map(v=>`<tr><td>${esc(v.nombre)}</td><td>${esc(v.tipo)}</td><td><select onchange="setBase('${v.id}',this.value)" style="padding:6px"><option value="">Rota</option>${SUCS.map(s=>`<option value="${s.id}" ${v.sucursalBase===s.id?'selected':''}>${esc(s.nombre)}</option>`).join('')}</select></td><td>${medidaSel(v)}</td><td><button class="btn small" onclick="qrShow('E','${v.id}')">QR</button> <button class="btn sec small" onclick="editVeh('${v.id}')">Editar</button> <button class="btn danger small" onclick="delVeh('${v.id}')">Quitar</button></td></tr>`).join('')}</table></div>
+    <p class="hint">"Se mide en" define si el consumo se calcula en L/h (horómetro) o en L/100 km (kilometraje).</p>` : '<p class="hint">Todavía no cargaste equipos.</p>'}</div>
+  <div class="card"><h2>QR de tanques / surtidores</h2>${tanques.length ? `<div class="tw"><table><tr><th>Sucursal</th><th>Tanque</th><th>Tipo</th><th></th></tr>
+    ${tanques.slice().sort(cmpTank).map(t=>`<tr><td>${esc(sucName(t.sucursalId))}</td><td><b>${esc(t.nombre)}</b></td><td>${tipoTxt(t.tipo)}</td><td><button class="btn small" onclick="qrShow('T','${t.id}')">QR</button></td></tr>`).join('')}</table></div>` : '<p class="hint">Todavía no hay tanques.</p>'}</div>`;
+}
+TABS.flota.list = listFlota;
 
+/* ================= QR: escanear al cargar combustible ================= */
+let scStream = null, scOn = false;
+function stopScan(){ scOn = false; if(scStream){ scStream.getTracks().forEach(t => t.stop()); scStream = null; } }
+const _closeModalQR = closeModal;
+closeModal = function(){ stopScan(); _closeModalQR(); };
+function qrMsg(html, ok){
+  const el = $('qrmsg'); if(!el) return;
+  el.style.cssText = 'margin-top:10px;padding:12px;border-radius:8px;font-size:17px;font-weight:700;background:' + (ok ? '#e0f2e7;color:#2e7d4f' : '#f9dedc;color:#b3261e');
+  el.innerHTML = html;
+}
+function scanCard(){
+  return `<div class="card"><h2>Escanear QR</h2><div class="flex">
+    <button class="btn" onclick="startScan('E')">1) QR del equipo</button><button class="btn" onclick="startScan('T')">2) QR del surtidor / tanque</button></div>
+    <div id="qrmsg"></div><div class="hint">Podés seguir eligiendo a mano más abajo si el QR no se lee.</div></div>`;
+}
+function startScan(kind){
+  if(!window.jsQR || !navigator.mediaDevices) return alert('No se pudo iniciar el lector de QR. Revisá la conexión o los permisos de la cámara.');
+  openModal(`<h2>${kind === 'E' ? 'Escaneá el QR del equipo' : 'Escaneá el QR del surtidor / tanque'}</h2>
+    <video id="scv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="hint">Apuntá la cámara al QR.</div><div class="err" id="sce"></div>
+    <button class="btn block" style="margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button>`);
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}}).then(st => {
+    scStream = st; const v = $('scv'); if(!v){ stopScan(); return; }
+    v.srcObject = st; v.play(); scOn = true; scLoop(kind, document.createElement('canvas'));
+  }).catch(() => { const e = $('sce'); if(e) e.textContent = 'No se pudo abrir la cámara. Permití el acceso a la cámara en el navegador.'; });
+}
+function scLoop(kind, cv){
+  if(!scOn) return;
+  const v = $('scv');
+  if(v && v.readyState === 4 && v.videoWidth){
+    cv.width = v.videoWidth; cv.height = v.videoHeight;
+    const x = cv.getContext('2d'); x.drawImage(v, 0, 0);
+    const r = jsQR(x.getImageData(0, 0, cv.width, cv.height).data, cv.width, cv.height);
+    if(r && r.data && r.data.indexOf(QRP) === 0){
+      const p = r.data.slice(QRP.length).split(':');
+      if(p[0] !== kind){ const e = $('sce'); if(e) e.textContent = kind === 'E' ? 'Ese QR es de un tanque. Escaneá el del equipo.' : 'Ese QR es de un equipo. Escaneá el del surtidor / tanque.'; }
+      else { closeModal(); applyScan(kind, p[1]); return; }
+    }
+  }
+  requestAnimationFrame(() => scLoop(kind, cv));
+}
+function applyScan(kind, id){
+  if(!$('cs')) return;
+  if(kind === 'E'){
+    const v = vehiculos.find(x => x.id === id);
+    if(!v) return qrMsg('✗ Ese equipo ya no existe en la app', false);
+    if(DEST !== 'vehiculo') setDest('vehiculo');
+    if(!$('cs').value && v.sucursalBase){ $('cs').value = v.sucursalBase; onSuc(); }
+    $('cv').value = v.id; favBtns();
+    return qrMsg('✓ Equipo: ' + esc(v.nombre), true);
+  }
+  const t = tanques.find(x => x.id === id);
+  if(!t) return qrMsg('✗ Ese tanque ya no existe en la app', false);
+  if($('cs').value !== t.sucursalId){ $('cs').value = t.sucursalId; onSuc(); }
+  if(t.tipo === 'fijo'){
+    $('ct').value = t.id; onTank();
+    return qrMsg('✓ Sacarás combustible del ' + esc(t.nombre) + ' (tanque fijo)', true);
+  }
+  const prem = combOf(t) === 'premium' ? ' (PREMIUM)' : '';
+  openModal(`<h2>Estás usando el ${esc(t.nombre)}${prem}</h2><p class="hint">¿Qué vas a hacer?</p>
+    <button class="btn block" onclick="qrMov('${id}','out')">Sacar combustible de este tanque</button>
+    <button class="btn block" style="margin-top:10px" onclick="qrMov('${id}','in')">Cargar este tanque (desde el tanque fijo)</button>
+    <button class="btn block" style="margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button>`);
+}
+function qrMov(id, how){
+  closeModal();
+  const t = tanques.find(x => x.id === id); if(!t) return;
+  const prem = combOf(t) === 'premium' ? ' (PREMIUM)' : '';
+  if(how === 'out'){
+    if(DEST !== 'vehiculo') setDest('vehiculo');
+    $('ct').value = id; onTank();
+    return qrMsg('✓ Sacarás combustible del ' + esc(t.nombre) + prem, true);
+  }
+  setDest('tanque'); $('cdt').value = id; updHint();
+  const f = tanques.find(x => x.id === $('ct').value);
+  qrMsg('✓ Vas a CARGAR el ' + esc(t.nombre) + prem + (f ? ' desde el ' + esc(f.nombre) : ''), true);
+}
+(function(){ const fc = TABS.cargar.form; TABS.cargar.form = () => scanCard() + fc(); })();
+
+/* ================= Entradas de aceites: varios productos en un remito ================= */
+if(!ACEITES.includes('Agua destilada')) ACEITES.splice(ACEITES.indexOf('Otro'), 0, 'Agua destilada');
+const ACE_UN = [['tambores','Tambores'],['latas','Latas'],['bidones','Bidones'],['litros','Litros']];
+const _formEntradaV = formEntrada;
+formEntrada = function(){
+  let h = _formEntradaV();
+  const a = h.indexOf('<div id="eace"'), b = h.indexOf('<div class="err" id="eerr">');
+  if(a < 0 || b < 0) return h;
+  return h.slice(0, a) + `<div id="eace" style="display:none">
+    <label>Productos recibidos (todos en el mismo remito)</label><div id="alines"></div>
+    <button class="btn sec small" onclick="addAceLine()">+ Agregar otro producto</button>
+    <div class="hint" id="atot"></div>
+    <label>Observaciones (opcional)</label><input id="eaobs">
+    <div class="hint">El N° de remito es opcional para aceites.</div></div>
+    ` + h.slice(b);
+};
+TABS.entradas.form = formEntrada;
+function addAceLine(){
+  const box = $('alines'); if(!box) return;
+  const d = document.createElement('div'); d.className = 'aline';
+  d.style.cssText = 'border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px';
+  d.innerHTML = `<div class="row"><div><label>Producto</label><select class="at" onchange="onAceLine(this)">${ACEITES.map(a => `<option>${a}</option>`).join('')}</select>
+    <input class="ao" placeholder="¿Cuál?" style="display:none;margin-top:6px"></div>
+    <div><label>Modelo (opcional)</label><input class="am" placeholder="Ej: H46"></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+    <div><label>Cantidad</label><input class="aq" type="number" inputmode="decimal" step="any" oninput="calcAce()"></div>
+    <div><label>Unidad</label><select class="au" onchange="onAceLine(this)">${ACE_UN.map(u => `<option value="${u[0]}">${u[1]}</option>`).join('')}</select></div>
+    <div><label>Litros por unidad</label><input class="al" type="number" inputmode="decimal" step="any" oninput="calcAce()"></div></div>
+    <div class="fl" style="margin-top:6px"><div class="hint ats" style="flex:1"></div><button class="btn danger small" onclick="delAceLine(this)">Quitar</button></div>`;
+  box.appendChild(d); calcAce();
+}
+function onAceLine(el){
+  const l = el.closest('.aline');
+  l.querySelector('.ao').style.display = l.querySelector('.at').value === 'Otro' ? '' : 'none';
+  const lit = l.querySelector('.au').value === 'litros';
+  l.querySelector('.al').disabled = lit; if(lit) l.querySelector('.al').value = '';
+  calcAce();
+}
+function delAceLine(b){ const box = $('alines'); if(box.children.length <= 1) return; b.closest('.aline').remove(); calcAce(); }
+function aceLines(){
+  return [...document.querySelectorAll('#alines .aline')].map(l => {
+    let t = l.querySelector('.at').value; if(t === 'Otro') t = l.querySelector('.ao').value.trim();
+    const q = num(l.querySelector('.aq').value), u = l.querySelector('.au').value, lu = num(l.querySelector('.al').value);
+    return {tipo:t, modelo:l.querySelector('.am').value.trim(), q, u, lu, lt: q == null ? null : (u === 'litros' ? q : (lu != null ? q * lu : null)), el:l};
+  });
+}
+function calcAce(){
+  let tot = 0;
+  aceLines().forEach(x => { const s = x.el.querySelector('.ats'); s.textContent = x.lt != null && x.u !== 'litros' ? 'Total: ' + nf(x.lt, x.lt % 1 ? 1 : 0) + ' L' : ''; tot += x.lt || 0; });
+  const t = $('atot'); if(t) t.innerHTML = tot ? 'Total en litros: <b>' + nf(tot, tot % 1 ? 1 : 0) + ' L</b>' : '';
+}
+const _afQR = afterForm;
+afterForm = function(){ _afQR(); if(tab === 'entradas' && $('alines') && !$('alines').children.length) addAceLine(); };
+saveEntradaAceite = async function(){
+  const suc = $('es').value, f = $('ef').value, rem = $('er').value.trim(), obs = $('eaobs').value.trim();
+  const err = $('eerr'); err.textContent = '';
+  const ls = aceLines();
+  if(!suc) return err.textContent = 'Elegí la sucursal';
+  if(!f) return err.textContent = 'Poné la fecha';
+  if(ls.some(x => !x.tipo)) return err.textContent = 'Escribí qué producto es en cada línea';
+  if(ls.some(x => x.q == null || x.q <= 0)) return err.textContent = 'Anotá la cantidad de cada producto';
+  if(ls.some(x => x.u !== 'litros' && x.lu != null && x.lu <= 0)) return err.textContent = 'Los litros por unidad deben ser mayores a 0';
+  const [y,m,dd] = f.split('-').map(Number), ts = new Date(y,m-1,dd,12).getTime();
+  const grupo = db.ref('entradas').push().key, upd = {};
+  ls.forEach(x => {
+    const k = db.ref('entradas').push().key;
+    const rec = {categoria:'aceite', ts, fecha:f, sucursalId:suc, sucursal:sucName(suc), aceite:x.tipo + (x.modelo ? ' ' + x.modelo : ''), tipoAceite:x.tipo, cantidad:x.q, unidad:x.u, por:cur.nombre, grupo};
+    if(x.modelo) rec.modelo = x.modelo;
+    if(x.u !== 'litros' && x.lu != null) rec.litrosUnidad = x.lu;
+    if(x.lt != null) rec.litrosTotal = x.lt;
+    if(rem) rec.remito = rem;
+    if(obs) rec.obs = obs;
+    upd['entradas/' + k] = rec;
+  });
+  try{
+    await db.ref().update(upd);
+    renderTab();
+    bigOk('ENTRADA GUARDADA', ls.length + (ls.length === 1 ? ' producto' : ' productos'));
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+};
+listAceites = function(){
+  const es = entAceFiltered();
+  return `<div class="card"><h2>Entradas de aceites y otros productos</h2>${es.length ? `<div class="tw"><table><tr><th>Fecha</th><th>Sucursal</th><th>Producto</th><th class="n">Cantidad</th><th>Unidad</th><th class="n">L por unidad</th><th class="n">Litros totales</th><th>Remito</th><th>Obs.</th><th></th></tr>
+    ${es.map(e=>`<tr><td>${esc(e.fecha)}</td><td>${esc(e.sucursal||'-')}</td><td>${esc(e.aceite)}</td><td class="n">${nf(e.cantidad,e.cantidad%1?1:0)}</td><td>${esc(e.unidad)}</td><td class="n">${e.litrosUnidad!=null?nf(e.litrosUnidad,e.litrosUnidad%1?1:0):'-'}</td><td class="n">${e.litrosTotal!=null?nf(e.litrosTotal,e.litrosTotal%1?1:0):'-'}</td><td>${esc(e.remito||'-')}</td><td>${esc(e.obs||'')}</td><td><button class="btn danger small" onclick="delEntrada('${e.id}')">Borrar</button></td></tr>`).join('')}
+    </table></div>` : '<p class="hint">Todavía no hay entradas de aceites.</p>'}</div>`;
+};
+TABS.entradas.list = function(){ return listEntradasComb() + listAceites(); };
+</script>
 </body>
 </html>
