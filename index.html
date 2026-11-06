@@ -1752,5 +1752,52 @@ listAceites = function(){
 };
 TABS.entradas.list = function(){ return listEntradasComb() + listAceites(); };
 </script>
+  <!-- ===== PEGAR justo DESPUÉS del bloque anterior (bloque-qr-y-aceites) y antes de </body> ===== -->
+<script>
+/* ===== Escaneo encadenado: equipo → tanque, y ayuda cuando falta el permiso de cámara ===== */
+let chainScan = false;
+
+function scanCard(){
+  return `<div class="card"><h2>Escanear QR</h2>
+    <button class="btn block" style="padding:16px;font-size:18px" onclick="startChain()">📷 Escanear equipo y surtidor</button>
+    <div id="qrmsg"></div>
+    <div class="flex" style="margin-top:10px"><a class="lnk" onclick="chainScan=false;startScan('E')">Solo equipo</a><a class="lnk" onclick="chainScan=false;startScan('T')">Solo surtidor / tanque</a></div>
+    <div class="hint">Podés seguir eligiendo a mano más abajo si el QR no se lee.</div></div>`;
+}
+function startChain(){ chainScan = true; startScan('E'); }
+
+function camHelp(kind, name){
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const pasos = name === 'NotFoundError' ? '<p>Este celular no tiene cámara disponible.</p>'
+    : ios ? `<ol style="padding-left:20px;margin:6px 0"><li>Tocá el botón <b>aA</b> en la barra de arriba del navegador.</li><li>Tocá <b>Ajustes del sitio web</b>.</li><li>En <b>Cámara</b> elegí <b>Permitir</b>.</li><li>Volvé acá y tocá <b>Reintentar</b>.</li></ol>`
+    : `<ol style="padding-left:20px;margin:6px 0"><li>Tocá el <b>candado</b> (o el ícono de ajustes) al lado de la dirección, arriba.</li><li>Tocá <b>Permisos</b>.</li><li>Activá <b>Cámara</b> (Permitir).</li><li>Volvé acá y tocá <b>Reintentar</b>.</li></ol>
+       <p class="hint">Si abrís la app desde el ícono de la pantalla de inicio y no ves el candado: Ajustes del celular → Aplicaciones → Chrome → Permisos → Cámara → Permitir.</p>`;
+  openModal(`<h2>Falta permiso de la cámara</h2>
+    <div class="alert" style="margin-top:8px">La app necesita la cámara para leer el QR. Seguí estos pasos:</div>${pasos}
+    <button class="btn block" style="margin-top:10px" onclick="startScan('${kind}')">Reintentar</button>
+    <button class="btn block" style="margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Elegir a mano</button>`);
+}
+
+startScan = function(kind){
+  if(!window.jsQR || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+    return alert('No se pudo iniciar el lector de QR. Revisá la conexión a internet o abrí la app con Chrome (Android) o Safari (iPhone).');
+  const paso = chainScan ? (kind === 'E' ? 'Paso 1 de 2: ' : 'Paso 2 de 2: ') : '';
+  openModal(`<h2>${paso}${kind === 'E' ? 'Escaneá el QR del equipo' : 'Escaneá el QR del surtidor / tanque'}</h2>
+    <video id="scv" playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
+    <div class="hint">Apuntá la cámara al QR.</div><div class="err" id="sce"></div>
+    <button class="btn block" style="margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="chainScan=false;closeModal()">Cancelar</button>`);
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}}}).then(st => {
+    scStream = st; const v = $('scv'); if(!v){ stopScan(); return; }
+    v.srcObject = st; v.play(); scOn = true; scLoop(kind, document.createElement('canvas'));
+  }).catch(e => { chainScan = false; camHelp(kind, e && e.name); });
+};
+
+const _applyScanChain = applyScan;
+applyScan = function(kind, id){
+  _applyScanChain(kind, id);
+  if(kind === 'E' && chainScan && $('cv') && $('cv').value === id) setTimeout(() => startScan('T'), 400);
+  else chainScan = false;
+};
+</script>
 </body>
 </html>
