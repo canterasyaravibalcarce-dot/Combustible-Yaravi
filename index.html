@@ -1799,5 +1799,61 @@ applyScan = function(kind, id){
   else chainScan = false;
 };
 </script>
+  <script>
+/* ===== Etiqueta QR con identidad Yaravi (marco amarillo, fondo negro, logo y nombre grande) ===== */
+const _qrLogo = new Image();
+_qrLogo.src = LOGO;
+
+function qrCanvas(text, label, sub){
+  const q = qrcode(0, 'M'); q.addData(text); q.make();
+  const n = q.getModuleCount(), W = 700, H = 900, Y = '#ffb909', K = '#1a1a1a';
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  const rr = (a, b, w, h, r) => { x.beginPath(); x.moveTo(a+r,b); x.arcTo(a+w,b,a+w,b+h,r); x.arcTo(a+w,b+h,a,b+h,r); x.arcTo(a,b+h,a,b,r); x.arcTo(a,b,a+w,b,r); x.closePath(); };
+  // marco amarillo y fondo negro
+  x.fillStyle = Y; x.fillRect(0, 0, W, H);
+  x.fillStyle = K; rr(14, 14, W-28, H-28, 28); x.fill();
+  // franja superior con rayas diagonales
+  x.save(); rr(14, 14, W-28, H-28, 28); x.clip(); x.beginPath(); x.rect(0, 0, W, 208); x.clip();
+  x.strokeStyle = '#222'; x.lineWidth = 14;
+  for(let i = -200; i < W; i += 36){ x.beginPath(); x.moveTo(i, 14); x.lineTo(i+200, 214); x.stroke(); }
+  x.restore();
+  x.fillStyle = Y; x.fillRect(14, 200, W-28, 8);
+  // logo y marca
+  let tx = 44;
+  if(_qrLogo.complete && _qrLogo.naturalWidth){
+    const lh = 100, lw = Math.min(150, lh * _qrLogo.naturalWidth / _qrLogo.naturalHeight);
+    x.drawImage(_qrLogo, 40, 100 - lh/2 + 14, lw, lh * (lw / (lh * _qrLogo.naturalWidth / _qrLogo.naturalHeight)));
+    tx = 40 + lw + 24;
+  }
+  x.textAlign = 'left'; x.textBaseline = 'alphabetic';
+  x.font = 'bold 40px Arial, Helvetica, sans-serif'; x.fillStyle = '#fff'; x.fillText('COMBUSTIBLE', tx, 100);
+  x.fillStyle = Y; x.fillText('YARAVI', tx, 148);
+  // QR en negro sobre panel blanco (máximo contraste para que lea bien)
+  x.fillStyle = '#fff'; rr(W/2-230, 240, 460, 460, 24); x.fill();
+  const cell = Math.floor(400 / n), qs = cell * n, ox = Math.round((W - qs) / 2), oy = 240 + Math.round((460 - qs) / 2);
+  x.fillStyle = '#000';
+  for(let r = 0; r < n; r++) for(let k = 0; k < n; k++) if(q.isDark(r, k)) x.fillRect(ox + k*cell, oy + r*cell, cell, cell);
+  // banda amarilla con el nombre
+  x.fillStyle = Y; rr(14, 740, W-28, H-754, 28); x.fill(); x.fillRect(14, 740, W-28, 60);
+  x.textAlign = 'center'; x.fillStyle = K;
+  let fs = 84; x.font = 'bold ' + fs + 'px Arial, Helvetica, sans-serif';
+  while(x.measureText(label).width > W - 90 && fs > 20){ fs -= 2; x.font = 'bold ' + fs + 'px Arial, Helvetica, sans-serif'; }
+  x.fillText(label, W/2, 818);
+  if(sub){ x.font = '30px Arial, Helvetica, sans-serif'; x.fillText(sub, W/2, 866); }
+  return c;
+}
+function qrShow(kind, id){
+  const it = kind === 'E' ? vehiculos.find(v => v.id === id) : tanques.find(t => t.id === id);
+  if(!it) return;
+  const sub = kind === 'E' ? 'Equipo' : tipoTxt(it.tipo) + ' · ' + sucName(it.sucursalId) + (combOf(it) === 'premium' ? ' · PREMIUM' : '');
+  _qrc = qrCanvas(QRP + kind + ':' + id, it.nombre, sub);
+  _qrName = 'QR-' + it.nombre.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '') + '.png';
+  openModal(`<h2>QR · ${esc(it.nombre)}</h2><div style="text-align:center"><img src="${_qrc.toDataURL('image/png')}" style="width:100%;max-width:300px;border-radius:10px"></div>
+    <div class="hint">Descargalo e imprimilo las veces que haga falta. Siempre se genera el mismo código.</div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="qrDownload()">Descargar imagen</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cerrar</button></div>`);
+}
+</script>
+
 </body>
 </html>
