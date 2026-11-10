@@ -1854,6 +1854,218 @@ function qrShow(kind, id){
     <div class="flex" style="margin-top:12px"><button class="btn" onclick="qrDownload()">Descargar imagen</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cerrar</button></div>`);
 }
 </script>
+/* ===== CATÁLOGO DE LUBRICANTES: lista desplegable con búsqueda + pestaña para administrarla ===== */
+var lubs = [], lubFilt = '';
+const nz = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
+/* Intenta deducir tipo, unidad y litros por unidad a partir del nombre (ej: "... X 205L"). Después se puede corregir. */
+function lubGuess(name){
+  const n = nz(name), o = {tipo:'Otro', unidad:'tambores', litrosUnidad:null};
+  const m = n.match(/x\s*(\d+(?:[.,]\d+)?)\s*(?:l|lt|lts|litros?)\b/);
+  if(m){
+    const l = parseFloat(m[1].replace(',', '.'));
+    o.litrosUnidad = l;
+    o.unidad = l >= 150 ? 'tambores' : l >= 15 ? 'bidones' : 'latas';
+  }
+  if(/destilad/.test(n)) o.tipo = 'Agua destilada';
+  else if(/refriger|anticong/.test(n)) o.tipo = 'Refrigerante';
+  else if(/grasa/.test(n)) o.tipo = 'Grasa';
+  else if(/hidr/.test(n)) o.tipo = 'Hidráulico';
+  else if(/atf|transm|caja|tdh|torque/.test(n)) o.tipo = 'Transmisión';
+  else if(/difer|ep ?90|80w|85w|gl-?[45]/.test(n)) o.tipo = 'Diferencial';
+  else if(/motor|elaion|sae|\d+w-?\d+/.test(n)) o.tipo = 'Motor';
+  if(!ACEITES.includes(o.tipo)) o.tipo = 'Otro';
+  return o;
+}
+
+/* ---------- Escucha de la lista (solo administrador, que es quien carga entradas) ---------- */
+const _slLub = startListeners;
+startListeners = function(){
+  _slLub();
+  if(isAdmin()) listen('lubricantes', s => { lubs = toArr(s).sort((a,b) => (a.nombre||'').localeCompare(b.nombre||'')); });
+};
+
+/* ---------- Pestaña "Lubricantes" ---------- */
+const lubTipoOpts = sel => ACEITES.map(a => `<option ${a === sel ? 'selected' : ''}>${esc(a)}</option>`).join('');
+const lubUnOpts = sel => ACE_UN.map(u => `<option value="${u[0]}" ${u[0] === sel ? 'selected' : ''}>${u[1]}</option>`).join('');
+
+function formLub(){
+  return `<div class="card"><h2>Agregar lubricante</h2>
+    <label>Nombre completo (como figura en la lista comercial)</label>
+    <input id="ln_n" placeholder="Ej: YPF HIDRAULICO BP 68 X 205L" onchange="lubAuto()">
+    <div class="row"><div><label>Tipo</label><select id="ln_t">${lubTipoOpts('Otro')}</select></div>
+    <div><label>Unidad en que viene</label><select id="ln_u">${lubUnOpts('tambores')}</select></div></div>
+    <label>Litros por unidad (opcional)</label><input id="ln_l" type="number" inputmode="decimal" step="any" placeholder="Ej: 205" style="max-width:160px">
+    <div class="hint">Al escribir el nombre, la app intenta completar tipo, unidad y litros sola (por ejemplo "X 205L"). Revisalo antes de guardar.</div>
+    <div class="err" id="ln_e"></div>
+    <button class="btn block" style="margin-top:12px" onclick="addLub()">Agregar a la lista</button></div>
+  <div class="card"><h2>Cargar la lista completa de una vez</h2>
+    <p class="hint">Pegá los nombres, uno por línea (podés copiarlos de una columna de Excel). Los que ya estén en la lista se saltean.</p>
+    <textarea id="ln_bulk" rows="6" placeholder="YPF HIDRAULICO BP 68 X 205L&#10;YPF HIDRO ATF X 205L&#10;..."></textarea>
+    <div class="err" id="ln_be"></div><div class="okmsg" id="ln_bo"></div>
+    <button class="btn block" style="margin-top:12px" onclick="importLubs()">Cargar lista</button></div>
+  <div class="card"><label style="margin-top:0">Buscar en la lista</label>
+    <input id="lf" value="${esc(lubFilt)}" placeholder="Ej: ypf hidr" oninput="lubFilt=this.value;$('la').innerHTML=listLub()"></div>`;
+}
+function lubAuto(){
+  const g = lubGuess($('ln_n').value);
+  $('ln_t').value = g.tipo; $('ln_u').value = g.unidad; $('ln_l').value = g.litrosUnidad ?? '';
+}
+const lubDup = (name, exceptId) => lubs.some(l => l.id !== exceptId && nz(l.nombre).replace(/\s+/g,' ') === nz(name).replace(/\s+/g,' '));
+async function addLub(){
+  const n = $('ln_n').value.trim().replace(/\s+/g, ' '), l = num($('ln_l').value);
+  const err = $('ln_e'); err.textContent = '';
+  if(!n) return err.textContent = 'Escribí el nombre del lubricante';
+  if(lubDup(n)) return err.textContent = 'Ese lubricante ya está en la lista';
+  const o = {nombre:n, tipo:$('ln_t').value, unidad:$('ln_u').value, creado:Date.now()};
+  if(l != null && l > 0) o.litrosUnidad = l;
+  try{ await db.ref('lubricantes').push(o); $('ln_n').value = ''; $('ln_l').value = ''; $('ln_t').value = 'Otro'; $('ln_u').value = 'tambores'; }
+  catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+async function importLubs(){
+  const err = $('ln_be'), ok = $('ln_bo'); err.textContent = ''; ok.textContent = '';
+  const lines = $('ln_bulk').value.split('\n').map(s => s.trim().replace(/\s+/g, ' ')).filter(Boolean);
+  if(!lines.length) return err.textContent = 'Pegá al menos un nombre';
+  const seen = new Set(lubs.map(l => nz(l.nombre).replace(/\s+/g,' '))), upd = {};
+  let skip = 0;
+  lines.forEach(n => {
+    const k = nz(n);
+    if(seen.has(k)){ skip++; return; }
+    seen.add(k);
+    const g = lubGuess(n), o = {nombre:n, tipo:g.tipo, unidad:g.unidad, creado:Date.now()};
+    if(g.litrosUnidad) o.litrosUnidad = g.litrosUnidad;
+    upd['lubricantes/' + db.ref('lubricantes').push().key] = o;
+  });
+  const cant = Object.keys(upd).length;
+  if(!cant) return err.textContent = 'Todos esos ya estaban en la lista';
+  try{ await db.ref().update(upd); $('ln_bulk').value = ''; ok.textContent = '✓ Se agregaron ' + cant + (skip ? ' (' + skip + ' ya existían)' : '') + '. Revisá el tipo y la unidad en la lista de abajo.'; }
+  catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+function listLub(){
+  const q = nz(lubFilt).split(/\s+/).filter(Boolean);
+  const f = lubs.filter(l => { const n = nz(l.nombre); return q.every(t => n.includes(t)); });
+  const un = u => (ACE_UN.find(x => x[0] === u) || [u, u || '-'])[1];
+  return `<div class="card"><h2>Lubricantes (${f.length}${f.length !== lubs.length ? ' de ' + lubs.length : ''})</h2>${f.length ? `<div class="tw"><table>
+    <tr><th>Nombre</th><th>Tipo</th><th>Unidad</th><th class="n">L por unidad</th><th></th></tr>
+    ${f.map(l => `<tr><td><b>${esc(l.nombre)}</b></td><td>${esc(l.tipo || '-')}</td><td>${esc(un(l.unidad))}</td><td class="n">${l.litrosUnidad != null ? nf(l.litrosUnidad, l.litrosUnidad % 1 ? 1 : 0) : '-'}</td>
+    <td><button class="btn sec small" onclick="editLub('${l.id}')">Editar</button> <button class="btn danger small" onclick="delLub('${l.id}')">Quitar</button></td></tr>`).join('')}
+    </table></div>` : '<p class="hint">Todavía no hay lubricantes en la lista. Agregalos arriba.</p>'}</div>`;
+}
+function editLub(id){
+  const l = lubs.find(x => x.id === id); if(!l) return;
+  openModal(`<h2>Editar lubricante</h2>
+    <label>Nombre completo</label><input id="ml_n" value="${esc(l.nombre)}">
+    <div class="row"><div><label>Tipo</label><select id="ml_t">${lubTipoOpts(l.tipo)}</select></div>
+    <div><label>Unidad</label><select id="ml_u">${lubUnOpts(l.unidad)}</select></div></div>
+    <label>Litros por unidad</label><input id="ml_l" type="number" step="any" value="${l.litrosUnidad ?? ''}">
+    <div class="hint">Cambiar el nombre no modifica las entradas ya registradas.</div>
+    <div class="err" id="ml_e"></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="saveLub('${id}')">Guardar</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button></div>`);
+}
+async function saveLub(id){
+  const n = $('ml_n').value.trim().replace(/\s+/g, ' '), l = num($('ml_l').value);
+  if(!n) return $('ml_e').textContent = 'Escribí el nombre';
+  if(lubDup(n, id)) return $('ml_e').textContent = 'Ya existe otro lubricante con ese nombre';
+  try{ await db.ref('lubricantes/' + id).update({nombre:n, tipo:$('ml_t').value, unidad:$('ml_u').value, litrosUnidad:(l != null && l > 0) ? l : null}); closeModal(); }
+  catch(e){ $('ml_e').textContent = 'No se pudo guardar: ' + e.message; }
+}
+function delLub(id){ if(confirm('¿Quitar este lubricante de la lista? Las entradas ya registradas se conservan.')) db.ref('lubricantes/' + id).remove(); }
+
+TABS.lubs = {form: formLub, list: listLub};
+const _raLub = renderApp;
+renderApp = function(){
+  _raLub();
+  if(!isAdmin()) return;
+  const t = document.querySelector('.tabs'); if(!t) return;
+  const b = document.createElement('button');
+  b.className = 'tab' + (tab === 'lubs' ? ' on' : ''); b.id = 'tab_lubs'; b.textContent = 'Lubricantes';
+  b.onclick = () => setTab('lubs');
+  t.appendChild(b);
+};
+
+/* ---------- Entradas de aceites: campo Modelo con lista desplegable y búsqueda ---------- */
+function sugAce(inp){
+  const box = inp.parentNode.querySelector('.sug'); if(!box) return;
+  const raw = inp.value.trim(), q = nz(raw).split(/\s+/).filter(Boolean);
+  const ms = lubs.filter(l => { const n = nz(l.nombre); return q.every(t => n.includes(t)); }).slice(0, 50);
+  let h = ms.map(l => `<div class="sugi" style="padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:15px" onpointerdown="pickAce('${l.id}',this,event)">${esc(l.nombre)}</div>`).join('');
+  if(raw && !lubs.some(l => nz(l.nombre) === nz(raw)))
+    h += `<div style="padding:10px 12px;font-size:14px;color:#8a5f00;background:#fff8e0;cursor:pointer" onpointerdown="quickLub(this,event)">${ms.length ? '' : 'No está en la lista. '}+ Agregar «${esc(raw)}» a la lista</div>`;
+  if(!h) h = '<div style="padding:10px 12px;font-size:14px;color:var(--mut)">La lista está vacía. Cargala en la pestaña Lubricantes, o escribí el modelo a mano.</div>';
+  box.innerHTML = h; box.style.display = 'block';
+}
+function pickAce(id, el, ev){
+  ev.preventDefault();
+  const l = lubs.find(x => x.id === id); if(!l) return;
+  const line = el.closest('.aline');
+  line.querySelector('.am').value = l.nombre;
+  const at = line.querySelector('.at'), au = line.querySelector('.au');
+  if(l.tipo && [...at.options].some(o => o.value === l.tipo)) at.value = l.tipo;
+  if(l.unidad && [...au.options].some(o => o.value === l.unidad)) au.value = l.unidad;
+  onAceLine(at);
+  if(au.value !== 'litros') line.querySelector('.al').value = l.litrosUnidad ?? '';
+  calcAce();
+  line.querySelector('.sug').style.display = 'none';
+}
+async function quickLub(el, ev){
+  ev.preventDefault();
+  const line = el.closest('.aline'), inp = line.querySelector('.am');
+  const n = inp.value.trim().replace(/\s+/g, ' '); if(!n) return;
+  if(!lubDup(n)){
+    const g = lubGuess(n), o = {nombre:n, tipo:g.tipo, unidad:g.unidad, creado:Date.now()};
+    if(g.litrosUnidad) o.litrosUnidad = g.litrosUnidad;
+    try{ await db.ref('lubricantes').push(o); }catch(e){ return alert('No se pudo agregar a la lista: ' + e.message); }
+  }
+  line.querySelector('.sug').style.display = 'none';
+  const l = lubs.find(x => nz(x.nombre) === nz(n));
+  if(l) pickAce(l.id, el, ev);
+}
+document.addEventListener('pointerdown', e => {
+  if(e.target.closest && (e.target.closest('.sug') || (e.target.classList && e.target.classList.contains('am')))) return;
+  document.querySelectorAll('.sug').forEach(b => b.style.display = 'none');
+});
+const _addAceLub = addAceLine;
+addAceLine = function(){
+  _addAceLub();
+  const l = [...document.querySelectorAll('#alines .aline')].pop(); if(!l) return;
+  const i = l.querySelector('.am'), p = i.parentNode;
+  p.style.position = 'relative';
+  p.querySelector('label').textContent = 'Modelo (tocá la lista o escribí)';
+  i.placeholder = 'Ej: YPF HIDR...'; i.setAttribute('autocomplete', 'off');
+  i.setAttribute('oninput', 'sugAce(this)'); i.setAttribute('onfocus', 'sugAce(this)');
+  const b = document.createElement('div'); b.className = 'sug';
+  b.style.cssText = 'display:none;position:absolute;left:0;top:100%;width:100%;min-width:min(340px,86vw);z-index:30;background:#fff;border:1px solid var(--line);border-radius:8px;max-height:250px;overflow:auto;box-shadow:0 6px 16px rgba(0,0,0,.25)';
+  p.appendChild(b);
+};
+
+/* Al guardar, el producto queda registrado con el nombre exacto del modelo (así el stock acumulado los agrupa bien) */
+saveEntradaAceite = async function(){
+  const suc = $('es').value, f = $('ef').value, rem = $('er').value.trim(), obs = $('eaobs').value.trim();
+  const err = $('eerr'); err.textContent = '';
+  const ls = aceLines();
+  if(!suc) return err.textContent = 'Elegí la sucursal';
+  if(!f) return err.textContent = 'Poné la fecha';
+  if(ls.some(x => !x.tipo && !x.modelo)) return err.textContent = 'Escribí qué producto es en cada línea';
+  if(ls.some(x => x.q == null || x.q <= 0)) return err.textContent = 'Anotá la cantidad de cada producto';
+  if(ls.some(x => x.u !== 'litros' && x.lu != null && x.lu <= 0)) return err.textContent = 'Los litros por unidad deben ser mayores a 0';
+  const [y,m,dd] = f.split('-').map(Number), ts = new Date(y,m-1,dd,12).getTime();
+  const grupo = db.ref('entradas').push().key, upd = {};
+  ls.forEach(x => {
+    const k = db.ref('entradas').push().key, tipo = x.tipo || 'Otro';
+    const rec = {categoria:'aceite', ts, fecha:f, sucursalId:suc, sucursal:sucName(suc), aceite:x.modelo || tipo, tipoAceite:tipo, cantidad:x.q, unidad:x.u, por:cur.nombre, grupo};
+    if(x.modelo) rec.modelo = x.modelo;
+    if(x.u !== 'litros' && x.lu != null) rec.litrosUnidad = x.lu;
+    if(x.lt != null) rec.litrosTotal = x.lt;
+    if(rem) rec.remito = rem;
+    if(obs) rec.obs = obs;
+    upd['entradas/' + k] = rec;
+  });
+  try{
+    await db.ref().update(upd);
+    renderTab();
+    bigOk('ENTRADA GUARDADA', ls.length + (ls.length === 1 ? ' producto' : ' productos'));
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+};
+</script>
 </body>
 </html>
