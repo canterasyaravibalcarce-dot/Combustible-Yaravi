@@ -1854,6 +1854,8 @@ function qrShow(kind, id){
     <div class="flex" style="margin-top:12px"><button class="btn" onclick="qrDownload()">Descargar imagen</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cerrar</button></div>`);
 }
 </script>
+<!-- ===== PEGAR ESTE BLOQUE COMPLETO justo antes de </body> (después del último </script>) ===== -->
+<script>
 /* ===== CATÁLOGO DE LUBRICANTES: lista desplegable con búsqueda + pestaña para administrarla ===== */
 var lubs = [], lubFilt = '';
 const nz = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -2067,5 +2069,6 @@ saveEntradaAceite = async function(){
   }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
 };
 </script>
+
 </body>
 </html>
