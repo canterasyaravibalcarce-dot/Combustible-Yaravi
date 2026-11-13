@@ -2069,6 +2069,172 @@ saveEntradaAceite = async function(){
   }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
 };
 </script>
+<!-- ===== USUARIOS: legajo, correo y yacimiento (pegar justo antes de </body>) ===== -->
+<script>
+var uPrev = [], uInc = false;
+const uNz = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const uTc = s => String(s || '').trim().toLowerCase().replace(/(^|[\s'-])([a-záéíóúñü])/g, (m, a, b) => a + b.toUpperCase());
+const uYacId = s => { const k = uNz(s).replace(/[^a-z]/g, ''); if(!k) return ''; const x = SUCS.find(v => uNz(v.nombre).replace(/[^a-z]/g, '') === k); return x ? x.id : ''; };
+const uMailOk = m => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m);
+const uUserFrom = nombre => String(nombre || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(norm).filter(Boolean).join('.');
+const uIncomplete = u => !u.legajo || !u.email || !u.yacimiento;
 
+/* ---------- Leer lo pegado desde Excel ---------- */
+function uParse(txt){
+  const rows = [];
+  txt.split(/\r?\n/).forEach(line => {
+    if(!line.trim()) return;
+    let c = line.split('\t').map(s => s.trim());
+    if(c.length < 2){
+      const m = line.trim().match(/^(\d+)\s+(.+?)\s+(la\s+mar[ií]a|la\s+florida|minera)\s+(\S+@\S+)\s*$/i);
+      c = m ? [m[1], m[2], m[3], m[4]] : [line.trim()];
+    }
+    if(['leg', 'legajo'].includes(uNz(c[0]).replace(/[^a-z]/g, ''))) return;
+    let leg = '', nom, yac = '', mail = '';
+    if(c.length === 1){ nom = c[0]; } else { leg = c[0]; nom = c[1]; yac = c[2] || ''; mail = c[3] || ''; }
+    rows.push({leg: leg.replace(/\s+/g, ''), nombre: uTc(nom), yacRaw: yac, yac: uYacId(yac), mail: mail.toLowerCase().replace(/\s+/g, ''), user: uUserFrom(nom), manual: false});
+  });
+  return rows;
+}
+function uCheck(){
+  const taken = new Set(usersList.map(u => u.username));
+  const legs = {}; usersList.forEach(u => { if(u.legajo) legs[String(u.legajo)] = u.nombre; });
+  uPrev.forEach(r => {
+    r.err = []; r.warn = [];
+    if(!r.nombre) r.err.push('Falta el nombre');
+    if(r.manual){ r.user = norm(r.user || ''); }
+    else { const b = uUserFrom(r.nombre); let u = b, i = 2; while(u && taken.has(u)) u = b + i++; if(u !== b) r.warn.push('Usuario repetido: se usó ' + u); r.user = u; }
+    if(!r.user) r.err.push('Falta el usuario');
+    else if(taken.has(r.user)) r.err.push('Ese usuario ya existe');
+    else taken.add(r.user);
+    if(!r.leg) r.warn.push('Sin legajo');
+    else if(legs[r.leg]) r.err.push('Legajo ya cargado (' + legs[r.leg] + ')');
+    else legs[r.leg] = r.nombre;
+    if(!r.yacRaw) r.warn.push('Sin yacimiento');
+    else if(!r.yac) r.err.push('Yacimiento no reconocido');
+    if(!r.mail) r.warn.push('Sin correo');
+    else if(!uMailOk(r.mail)) r.err.push('Correo no válido');
+  });
+}
+function uRender(){
+  const el = $('uprev'); if(!el) return;
+  if(!uPrev.length){ el.innerHTML = ''; return; }
+  const ok = uPrev.filter(r => !r.err.length).length;
+  el.innerHTML = `<h2 style="margin-top:18px">Revisá antes de crear</h2>
+    <div class="tw"><table><tr><th>Leg.</th><th>Apellido y nombres</th><th>Yacimiento</th><th>Correo</th><th>Usuario</th><th>Estado</th></tr>
+    ${uPrev.map((r, i) => `<tr><td>${esc(r.leg || '-')}</td><td>${esc(r.nombre)}</td><td>${esc(r.yac ? sucName(r.yac) : (r.yacRaw || '-'))}</td><td>${esc(r.mail || '-')}</td>
+      <td><input value="${esc(r.user)}" onchange="uEditUser(${i},this.value)" style="padding:6px;min-width:150px"></td>
+      <td>${r.err.map(e => `<span class="pill bad">${esc(e)}</span>`).join(' ')} ${r.warn.map(w => `<span class="pill warn">${esc(w)}</span>`).join(' ')}${(!r.err.length && !r.warn.length) ? '<span class="pill ok">OK</span>' : ''}</td></tr>`).join('')}
+    </table></div>
+    <p class="hint">Se crearán <b>${ok}</b> de ${uPrev.length}. Las filas con aviso rojo no se crean: corregilas en el cuadro de arriba y tocá "Revisar lista" de nuevo, o cambiá el usuario acá mismo. Los avisos amarillos se crean igual y los completás después con "Editar".</p>
+    <div class="flex"><button class="btn" id="ubtn" onclick="uCreate()">Crear ${ok} usuarios</button><button class="btn sec" onclick="uCancel()">Cancelar</button></div>
+    <pre class="out" id="uout" style="display:none"></pre>`;
+}
+function uPreview(){
+  const err = $('uerr'); err.textContent = '';
+  const rows = uParse($('un').value);
+  if(!rows.length){ uPrev = []; uRender(); return err.textContent = 'Pegá al menos una fila'; }
+  uPrev = rows; uCheck(); uRender();
+}
+function uEditUser(i, v){ uPrev[i].user = v.trim(); uPrev[i].manual = true; uCheck(); uRender(); }
+function uCancel(){ uPrev = []; uRender(); }
+async function uCreate(){
+  const pw = $('up').value, role = $('ur').value, err = $('uerr'); err.textContent = '';
+  if(pw.length < 6) return err.textContent = 'La contraseña inicial debe tener al menos 6 caracteres';
+  const list = uPrev.filter(r => !r.err.length);
+  if(!list.length) return err.textContent = 'No hay filas válidas para crear';
+  $('ubtn').disabled = true;
+  const out = $('uout'); out.style.display = 'block'; out.textContent = '';
+  for(const r of list){
+    try{
+      const c = await sauth.createUserWithEmailAndPassword(emailFor(r.user), pw);
+      const uid = c.user.uid;
+      await sauth.signOut();
+      const rec = {username: r.user, nombre: r.nombre, role, creado: Date.now()};
+      if(r.leg) rec.legajo = r.leg;
+      if(r.yac) rec.yacimiento = r.yac;
+      if(r.mail) rec.email = r.mail;
+      await db.ref('users/' + uid).set(rec);
+      out.textContent += `✓ ${r.nombre} → usuario: ${r.user}\n`;
+    }catch(e){ out.textContent += `✗ ${r.nombre}: ${authErr(e)}\n`; }
+  }
+  out.textContent += `\nContraseña inicial: ${pw}`;
+  $('ubtn').style.display = 'none'; $('un').value = '';
+}
+function uAddOne(){
+  const nom = $('ua_nom').value.trim(), err = $('ua_e'); err.textContent = '';
+  if(!nom) return err.textContent = 'Escribí apellido y nombres';
+  const y = $('ua_yac').value;
+  const line = [$('ua_leg').value.trim(), nom, y ? sucName(y) : '', $('ua_mail').value.trim()].join('\t');
+  const t = $('un'); t.value = (t.value.trim() ? t.value.replace(/\s+$/, '') + '\n' : '') + line;
+  ['ua_leg', 'ua_nom', 'ua_mail'].forEach(i => $(i).value = ''); $('ua_yac').value = '';
+  uPreview();
+}
+
+/* ---------- Formulario ---------- */
+function formUsuarios(){
+  uPrev = [];
+  return `<div class="card"><h2>Alta de usuarios en lote</h2>
+    <p class="hint">Pegá las filas copiadas de Excel, con las columnas en este orden: <b>Leg, Apellido y Nombres, Yacimiento, Mail</b> (si copiás con el título, lo ignora). El usuario se arma con el apellido y el primer nombre: <i>Hernandez Juan Emilio</i> → <i>hernandez.juan</i>. Antes de crear nada vas a ver una vista previa donde podés corregir el usuario (útil con apellidos compuestos).</p>
+    <label>Filas de Excel</label><textarea id="un" rows="6"></textarea>
+    <div class="row"><div><label>Rol</label><select id="ur"><option value="operador">Operador</option><option value="mecanico">Jefe de mecánicos</option><option value="jefeequipos">Jefe de equipos</option><option value="admin">Administrador</option></select></div>
+    <div><label>Contraseña inicial (mínimo 6 caracteres)</label><input id="up"></div></div>
+    <div class="err" id="uerr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="uPreview()">Revisar lista</button>
+    <div id="uprev"></div></div>
+  <div class="card"><h2>Agregar un usuario solo</h2>
+    <div class="row"><div><label>N° de legajo</label><input id="ua_leg" inputmode="numeric"></div>
+    <div><label>Apellido y nombres</label><input id="ua_nom" placeholder="Ej: Hernandez Juan Emilio"></div></div>
+    <div class="row"><div><label>Yacimiento</label><select id="ua_yac"><option value="">Sin asignar</option>${SUCS.map(s => `<option value="${s.id}">${esc(s.nombre)}</option>`).join('')}</select></div>
+    <div><label>Correo electrónico</label><input id="ua_mail" type="email" autocapitalize="none"></div></div>
+    <div class="err" id="ua_e"></div>
+    <button class="btn block" style="margin-top:12px" onclick="uAddOne()">Agregar a la lista de arriba</button>
+    <div class="hint">Se suma a la lista de arriba y se crea junto con los demás, con el rol y la contraseña que elijas allá.</div></div>`;
+}
+
+/* ---------- Lista y edición ---------- */
+function uToggleInc(){ uInc = !uInc; $('la').innerHTML = listUsuarios(); }
+function listUsuarios(){
+  const inc = usersList.filter(uIncomplete).length;
+  const rows = uInc ? usersList.filter(uIncomplete) : usersList;
+  return `<div class="card"><h2>Usuarios (${usersList.length})</h2>
+    <div class="flex" style="margin-bottom:10px"><button class="chip ${uInc ? 'on' : ''}" onclick="uToggleInc()">Solo incompletos (${inc})</button></div>
+    <div class="tw"><table><tr><th>Leg.</th><th>Nombre</th><th>Usuario</th><th>Yacimiento</th><th>Correo</th><th>Rol</th><th class="act"></th></tr>
+    ${rows.map(u => `<tr><td>${esc(u.legajo || '-')}</td><td>${esc(u.nombre)}${uIncomplete(u) ? ' <span class="pill warn">Incompleto</span>' : ''}</td><td>${esc(u.username)}</td><td>${esc(u.yacimiento ? sucName(u.yacimiento) : '-')}</td><td>${esc(u.email || '-')}</td>
+      <td>${u.id === cur.uid ? roleTxt(u.role) : `<select style="padding:6px" onchange="setRole('${u.id}',this.value)">${[['operador', 'Operador'], ['mecanico', 'Jefe de mecánicos'], ['jefeequipos', 'Jefe de equipos'], ['admin', 'Administrador']].map(r => `<option value="${r[0]}" ${u.role === r[0] ? 'selected' : ''}>${r[1]}</option>`).join('')}</select>`}</td>
+      <td class="act"><button class="btn sec small" onclick="uEdit('${u.id}')">Editar</button>${u.id === cur.uid ? '' : ` <button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
+    <p class="hint">"Quitar acceso" bloquea al usuario en la app. Su cuenta puede borrarse del todo desde la consola de Firebase (Authentication).</p></div>`;
+}
+function uEdit(id){
+  const u = usersList.find(x => x.id === id); if(!u) return;
+  openModal(`<h2>${esc(u.nombre)}</h2><p class="hint">Usuario: <b>${esc(u.username)}</b></p>
+    <label>Número de legajo</label><input id="mu_l" inputmode="numeric" value="${esc(u.legajo || '')}">
+    <label>Yacimiento</label><select id="mu_y"><option value="">Sin asignar</option>${SUCS.map(s => `<option value="${s.id}" ${u.yacimiento === s.id ? 'selected' : ''}>${esc(s.nombre)}</option>`).join('')}</select>
+    <label>Correo electrónico</label><input id="mu_m" type="email" autocapitalize="none" value="${esc(u.email || '')}">
+    <div class="hint">Son datos de contacto: no cambian el usuario ni la contraseña para ingresar.</div>
+    <div class="err" id="mu_e"></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="uSave('${id}',false)">Guardar</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="uSave('${id}',true)">Guardar y siguiente incompleto</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button></div>`);
+}
+async function uSave(id, next){
+  if(!isAdmin()) return;
+  const l = $('mu_l').value.trim(), y = $('mu_y').value, m = $('mu_m').value.trim().toLowerCase(), err = $('mu_e');
+  err.textContent = '';
+  if(m && !uMailOk(m)) return err.textContent = 'El correo no parece válido';
+  const dup = l && usersList.find(x => x.id !== id && String(x.legajo || '') === l);
+  if(dup) return err.textContent = 'Ese legajo ya lo tiene ' + dup.nombre;
+  let nid = null;
+  if(next){
+    const i = usersList.findIndex(x => x.id === id);
+    const n = usersList.slice(i + 1).concat(usersList.slice(0, i)).find(uIncomplete);
+    nid = n ? n.id : null;
+  }
+  try{
+    await db.ref('users/' + id).update({legajo: l || null, yacimiento: y || null, email: m || null});
+    closeModal();
+    if(next){ if(nid) uEdit(nid); else alert('Ya no quedan usuarios incompletos.'); }
+  }catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+}
+TABS.usuarios = {form: formUsuarios, list: listUsuarios};
+</script>
 </body>
 </html>
