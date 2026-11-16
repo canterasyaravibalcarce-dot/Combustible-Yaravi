@@ -2362,5 +2362,166 @@ saveDesp = async function(id){
   catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
 };
 </script>
+  <script>
+/* ===== LOGIN CON DNI (alias: las cuentas y contraseñas no cambian) ===== */
+const dFmt = d => String(d || '').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+var dPrev = [];
+
+/* ---------- Login: acepta DNI (con o sin puntos) o el usuario de siempre ---------- */
+doLogin = async function(){
+  const raw = $('lu').value.trim(), p = $('lp').value;
+  if(!raw || !p){ $('lerr').textContent = 'Completá usuario y contraseña'; return; }
+  let u = raw;
+  const dg = raw.replace(/[.\s-]/g, '');
+  if(/^\d{6,9}$/.test(dg)){
+    try{ const s = await db.ref('loginIds/' + dg).get(); if(s.exists()) u = s.val(); }
+    catch(e){ console.error('loginIds', e); }
+  }
+  try{ await auth.signInWithEmailAndPassword(emailFor(u), p); }
+  catch(e){ $('lerr').textContent = authErr(e); }
+};
+const _rlDni = renderLogin;
+renderLogin = function(first){
+  _rlDni(first);
+  if(!first && $('lu')){
+    const l = $('lu').previousElementSibling;
+    if(l && l.tagName === 'LABEL') l.textContent = 'Usuario o DNI';
+  }
+};
+
+/* ---------- Buscar a quién corresponde cada nombre ---------- */
+const dNz = s => uNz(s).replace(/[^a-z ]/g, ' ').replace(/\s+/g, ' ').trim();
+const dKey = s => dNz(s).split(' ').filter(Boolean).sort().join(' ');
+function dMatch(nombre){
+  const k = dKey(nombre); if(!k) return {c: [], how: ''};
+  let m = usersList.filter(u => dKey(u.nombre) === k);
+  if(m.length) return {c: m, how: 'exacto'};
+  const un = uUserFrom(nombre);
+  m = un ? usersList.filter(u => u.username === un) : [];
+  if(m.length) return {c: m, how: 'usuario'};
+  const a = k.split(' ');
+  m = usersList.filter(u => { const b = dKey(u.nombre).split(' '); return b.length && (a.every(w => b.includes(w)) || b.every(w => a.includes(w))); });
+  return {c: m, how: 'parcial'};
+}
+
+/* ---------- Leer lo pegado ---------- */
+function dParse(txt){
+  const rows = [], dniRe = /^\d{1,3}(?:\.\d{3})+$|^\d{6,9}$/;
+  txt.split(/\r?\n/).forEach(line => {
+    if(!line.trim()) return;
+    const cells = line.split('\t').map(s => s.trim()).filter(Boolean);
+    let dni = '', nom = '';
+    if(cells.length > 1){
+      const dc = cells.find(c => dniRe.test(c) && [7, 8].includes(c.replace(/\D/g, '').length)) || cells.find(c => dniRe.test(c));
+      dni = dc ? dc.replace(/\D/g, '') : '';
+      nom = cells.find(c => /[a-záéíóúñü]/i.test(c) && !c.includes('@') && !uYacId(c)) || '';
+    }else{
+      let t = line.trim();
+      const m = t.match(/\d{1,3}(?:\.\d{3})+|\d{6,9}/);
+      if(m){ dni = m[0].replace(/\D/g, ''); t = t.replace(m[0], ' '); }
+      nom = t.replace(/\S+@\S+/g, ' ').replace(/[0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    if(!dni && /^(apellido|nombre|dni|leg|documento)/.test(uNz(nom))) return;
+    nom = uTc(nom);
+    const r = {nom, dni}, m = dMatch(nom);
+    r.nCand = m.c.length; r.how = m.how; r.uid = m.c.length === 1 ? m.c[0].id : '';
+    rows.push(r);
+  });
+  return rows;
+}
+function dCheck(){
+  const dnis = {}, uids = {};
+  dPrev.forEach(r => {
+    r.err = []; r.warn = []; r.same = false;
+    const u = usersList.find(x => x.id === r.uid);
+    if(!r.dni) r.err.push('Sin DNI');
+    else if(r.dni.length < 6 || r.dni.length > 9) r.err.push('DNI no válido');
+    if(!u) r.err.push(r.nCand > 1 ? 'Varios usuarios coinciden: elegí uno' : 'Usuario no encontrado: elegilo a mano');
+    if(r.dni){ if(dnis[r.dni]) r.err.push('DNI repetido en la lista'); else dnis[r.dni] = 1; }
+    if(u){
+      if(uids[u.id]) r.err.push('Ese usuario aparece dos veces'); else uids[u.id] = 1;
+      const o = r.dni ? usersList.find(x => x.id !== u.id && x.dni === r.dni) : null;
+      if(o) r.err.push('Ese DNI ya lo tiene ' + o.nombre);
+      if(u.dni && u.dni === r.dni) r.same = true;
+      else if(u.dni) r.warn.push('Reemplaza el DNI anterior (' + dFmt(u.dni) + ')');
+      if(r.how === 'parcial' && !r.picked) r.warn.push('Coincidencia parcial: confirmá que es la persona');
+    }
+  });
+}
+function dRender(){
+  const el = $('dprev'); if(!el) return;
+  if(!dPrev.length){ el.innerHTML = ''; return; }
+  const ok = dPrev.filter(r => !r.err.length && !r.same).length;
+  const opts = '<option value="">Elegir usuario...</option>' + usersList.map(u => `<option value="${u.id}">${esc(u.nombre)} (${esc(u.username)})</option>`).join('');
+  el.innerHTML = `<h2 style="margin-top:18px">Revisá antes de guardar</h2>
+    <div class="tw"><table><tr><th>Nombre en la lista</th><th>DNI</th><th>Usuario de la app</th><th>Estado</th></tr>
+    ${dPrev.map((r, i) => { const u = usersList.find(x => x.id === r.uid);
+      return `<tr><td>${esc(r.nom || '-')}</td><td>${esc(r.dni ? dFmt(r.dni) : '-')}</td>
+      <td><select onchange="dPick(${i},this.value)" style="padding:6px;min-width:230px">${opts.replace('value="' + r.uid + '"', 'value="' + r.uid + '" selected')}</select>
+      ${u ? `<div class="hint">Hoy ingresa con: ${esc(u.username)}</div>` : ''}</td>
+      <td>${r.err.map(e => `<span class="pill bad">${esc(e)}</span>`).join(' ')} ${r.warn.map(w => `<span class="pill warn">${esc(w)}</span>`).join(' ')}${r.same && !r.err.length ? '<span class="pill ok">Sin cambios</span>' : ''}${(!r.err.length && !r.warn.length && !r.same) ? '<span class="pill ok">OK</span>' : ''}</td></tr>`; }).join('')}
+    </table></div>
+    <p class="hint">Se guardarán <b>${ok}</b> de ${dPrev.length}. Las filas con aviso rojo no se guardan: elegí el usuario correcto en el desplegable o corregí la lista y volvé a tocar "Revisar lista".</p>
+    <div class="flex"><button class="btn" id="dbtn" onclick="dSave()" ${ok ? '' : 'disabled'}>Guardar ${ok} DNI</button><button class="btn sec" onclick="dPrev=[];dRender()">Cancelar</button></div>
+    <div class="okmsg" id="dout"></div>`;
+}
+function dPreview(){
+  const err = $('derr'); err.textContent = '';
+  dPrev = dParse($('dn').value);
+  if(!dPrev.length){ dRender(); return err.textContent = 'Pegá al menos una fila'; }
+  dCheck(); dRender();
+}
+function dPick(i, uid){ dPrev[i].uid = uid; dPrev[i].picked = true; dCheck(); dRender(); }
+
+/* ---------- Guardar ---------- */
+async function dSave(){
+  if(!isAdmin()) return;
+  const list = dPrev.filter(r => !r.err.length && !r.same);
+  if(!list.length) return;
+  const upd = {};
+  list.forEach(r => {
+    const u = usersList.find(x => x.id === r.uid); if(!u) return;
+    if(u.dni && u.dni !== r.dni) upd['loginIds/' + u.dni] = null;
+    upd['users/' + u.id + '/dni'] = r.dni;
+    upd['loginIds/' + r.dni] = u.username;
+  });
+  $('dbtn').disabled = true;
+  try{
+    await db.ref().update(upd);
+    const n = list.length;
+    dPrev = []; $('dn').value = ''; dRender();
+    $('dprev').innerHTML = `<div class="okmsg">✓ Se asignaron ${n} DNI. Desde ahora pueden ingresar con su DNI y su contraseña de siempre.</div>`;
+  }catch(e){
+    $('dbtn').disabled = false;
+    $('dout').className = 'err';
+    $('dout').textContent = 'No se pudo guardar: ' + e.message + ' (revisá que hayas publicado las reglas de "loginIds")';
+  }
+}
+
+/* ---------- Pestaña Usuarios: formulario + columna DNI ---------- */
+function formDni(){
+  dPrev = [];
+  return `<div class="card"><h2>Asignar DNI como usuario de ingreso</h2>
+    <p class="hint">Pegá la lista copiada de Excel con <b>Apellido y Nombres</b> y <b>DNI</b>, en cualquier orden (si trae más columnas, las ignora). La app busca a cada persona entre los usuarios que ya existen y antes de guardar ves una vista previa para corregir. Después cada uno ingresa con su DNI (con o sin puntos) y la misma contraseña de siempre.</p>
+    <label>Lista (nombre y DNI)</label><textarea id="dn" rows="6"></textarea>
+    <div class="err" id="derr"></div>
+    <button class="btn block" style="margin-top:12px" onclick="dPreview()">Revisar lista</button>
+    <div id="dprev"></div></div>`;
+}
+TABS.usuarios.form = (function(f){ return () => f() + formDni(); })(formUsuarios);
+
+listUsuarios = function(){
+  const inc = usersList.filter(uIncomplete).length;
+  const rows = uInc ? usersList.filter(uIncomplete) : usersList;
+  return `<div class="card"><h2>Usuarios (${usersList.length})</h2>
+    <div class="flex" style="margin-bottom:10px"><button class="chip ${uInc ? 'on' : ''}" onclick="uToggleInc()">Solo incompletos (${inc})</button></div>
+    <div class="tw"><table><tr><th>Leg.</th><th>Nombre</th><th>Usuario</th><th>DNI</th><th>Yacimiento</th><th>Correo</th><th>Rol</th><th class="act"></th></tr>
+    ${rows.map(u => `<tr><td>${esc(u.legajo || '-')}</td><td>${esc(u.nombre)}${uIncomplete(u) ? ' <span class="pill warn">Incompleto</span>' : ''}</td><td>${esc(u.username)}</td><td>${u.dni ? dFmt(u.dni) : '<span class="pill warn">Sin DNI</span>'}</td><td>${esc(u.yacimiento ? sucName(u.yacimiento) : '-')}</td><td>${esc(u.email || '-')}</td>
+      <td>${u.id === cur.uid ? roleTxt(u.role) : `<select style="padding:6px" onchange="setRole('${u.id}',this.value)">${[['operador', 'Operador'], ['mecanico', 'Jefe de mecánicos'], ['jefeequipos', 'Jefe de equipos'], ['admin', 'Administrador']].map(r => `<option value="${r[0]}" ${u.role === r[0] ? 'selected' : ''}>${r[1]}</option>`).join('')}</select>`}</td>
+      <td class="act"><button class="btn sec small" onclick="uEdit('${u.id}')">Editar</button>${u.id === cur.uid ? '' : ` <button class="btn danger small" onclick="delUser('${u.id}')">Quitar acceso</button>`}</td></tr>`).join('')}</table></div>
+    <p class="hint">"Quitar acceso" bloquea al usuario en la app. Su cuenta puede borrarse del todo desde la consola de Firebase (Authentication).</p></div>`;
+};
+TABS.usuarios.list = listUsuarios;
+</script>
 </body>
 </html>
