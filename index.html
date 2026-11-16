@@ -2236,5 +2236,131 @@ async function uSave(id, next){
 }
 TABS.usuarios = {form: formUsuarios, list: listUsuarios};
 </script>
+  <script>
+/* ===== CONTADOR: aviso de punto decimal + editar contador y litros ===== */
+const MAX_DIF_CONTADOR = 10000; // litros máximos razonables entre dos lecturas del surtidor
+
+function contadorProblem(tankId, c){
+  const lc = lastContador(tankId);
+  if(c == null || lc == null) return null;
+  const dif = c - lc, s = Math.round(c) / 10;
+  if(dif > MAX_DIF_CONTADOR && c % 1 === 0 && s >= lc && s - lc <= MAX_DIF_CONTADOR){
+    const sug = s.toFixed(1);
+    return {tipo:'punto', block:true, sug,
+      short:'Parece que falta el punto decimal. ¿Será ' + nf(s,1) + '?',
+      msg:'Anotaste <b>' + nf(c,0) + '</b>, pero el último contador registrado es <b>' + nf(lc,1) + '</b>.<br>Seguramente falta el punto decimal: el contador debería ser <b>' + nf(s,1) + '</b>.'};
+  }
+  if(dif > MAX_DIF_CONTADOR){
+    return {tipo:'salto', block:true,
+      short:'El contador sube ' + nf(dif,0) + ' L desde la última lectura. Revisalo.',
+      msg:'El contador que anotaste (<b>' + nf(c,1) + '</b>) está <b>' + nf(dif,0) + ' L</b> por encima del último registrado (<b>' + nf(lc,1) + '</b>).<br>Eso no es posible en una sola carga. Fijate si te falta o te sobra un número, o el punto decimal.'};
+  }
+  if(dif < 0 && lc % 1 === 0 && c >= lc / 10 && c - lc / 10 <= MAX_DIF_CONTADOR){
+    return {tipo:'ultimoMal', block:false,
+      short:'El último contador registrado parece mal cargado. Avisale al administrador.',
+      msg:'Tu contador (<b>' + nf(c,1) + '</b>) es menor que el último registrado (<b>' + nf(lc,1) + '</b>), pero ese último parece estar mal cargado (sin punto decimal). Avisale al administrador para que lo corrija.'};
+  }
+  return null;
+}
+function contadorAlert(p){
+  openModal(`<h2>⚠ Revisá el contador</h2><div class="alert" style="margin-top:8px">${p.msg}</div>` +
+    (p.sug ? `<button class="btn block" onclick="$('cc').value='${p.sug}';lManual=false;onContador();closeModal()">Usar ${nf(parseFloat(p.sug),1)}</button>` : '') +
+    `<button class="btn block" style="margin-top:10px;background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal();$('cc').focus()">Voy a corregirlo yo</button>`);
+}
+const _saveDespachoCtr = saveDespacho;
+saveDespacho = function(){
+  const t = tanques.find(x => x.id === $('ct').value);
+  if(t && t.tipo === 'fijo'){
+    const p = contadorProblem(t.id, num($('cc').value));
+    if(p && p.block){ contadorAlert(p); return; }
+    if(p && !confirm(p.msg.replace(/<[^>]+>/g, '') + '\n\n¿Guardar igual?')) return;
+  }
+  return _saveDespachoCtr();
+};
+const _onContadorCtr = onContador;
+onContador = function(){
+  _onContadorCtr();
+  const t = tanques.find(x => x.id === $('ct').value), h = $('chint');
+  const p = (t && t.tipo === 'fijo') ? contadorProblem(t.id, num($('cc').value)) : null;
+  if(p){
+    if(p.block && !lManual) $('cl').value = '';
+    if(h){ h.style.color = 'var(--bad)'; h.style.fontWeight = '700'; h.textContent = '⚠ ' + p.short; }
+  }else if(h){ h.style.color = ''; h.style.fontWeight = ''; updHint(); }
+};
+
+/* ---------- Marca "editado" (ahora también contador y litros) ---------- */
+editPill = function(d){
+  if(!(d.destEditadoTs || d.horoEditadoTs || d.contEditadoTs || d.litrosEditadoTs)) return '';
+  const t = [d.destAnterior ? 'Equipo antes: ' + d.destAnterior : '',
+    d.horoAnterior != null ? 'Hor/Km antes: ' + d.horoAnterior : '',
+    d.contAnterior != null ? 'Contador antes: ' + d.contAnterior : '',
+    d.litrosAnterior != null ? 'Litros antes: ' + d.litrosAnterior : ''].filter(Boolean).join(' · ');
+  return ' <span class="pill warn" title="' + esc(t) + '">editado</span>';
+};
+
+/* ---------- Editar despacho: equipo, horas/km, contador y litros ---------- */
+function _ctrVecinos(d){
+  const same = despachos.filter(x => x.tanqueId === d.tanqueId && x.contador != null).sort((a,b) => a.ts - b.ts);
+  const i = same.findIndex(x => x.id === d.id);
+  return {pv: i > 0 ? same[i-1] : null, nx: (i >= 0 && i < same.length - 1) ? same[i+1] : null};
+}
+editDesp = function(id){
+  if(!isAdmin()) return;
+  const d = despachos.find(x => x.id === id); if(!d) return;
+  const esTan = d.destTipo === 'tanque';
+  const tieneCont = d.contador != null || d.tanqueTipo === 'fijo';
+  const {pv, nx} = _ctrVecinos(d);
+  const opt = v => `<option value="${v.id}" ${v.id === d.vehiculoId ? 'selected' : ''}>${esc(v.nombre)}${v.tipo ? ' (' + esc(v.tipo) + ')' : ''}</option>`;
+  openModal(`<h2>Editar despacho</h2>
+    <p class="hint">${fdt(d.ts)} · ${esc(d.sucursal || '-')} · ${esc(d.operador)} · Sale de: ${esc(origLabel(d))}<br>Destino: <b>${esc(destLabel(d))}</b></p>
+    ${esTan ? '' : `<label>Equipo</label><select id="md_v"><option value="">Elegir...</option>${vehiculos.map(opt).join('')}</select>
+    <label>Horómetro / Kilometraje</label><input id="md_h" type="number" inputmode="decimal" step="any" value="${d.horometro ?? ''}">`}
+    ${tieneCont ? `<label>Contador del surtidor</label><input id="md_c" type="number" inputmode="decimal" step="any" value="${d.contador ?? ''}">
+    <div class="hint">Contador anterior de este tanque: <b>${pv ? nf(pv.contador,1) : '-'}</b> · Siguiente: <b>${nx ? nf(nx.contador,1) : '-'}</b></div>
+    <div class="flex" style="margin-top:6px"><button class="btn sec small" onclick="$('md_c').value=(Math.round(num($('md_c').value))/10).toFixed(1)">Poner el punto (÷10)</button>
+    ${pv ? `<button class="btn sec small" onclick="var c=num($('md_c').value);if(c!=null)$('md_l').value=Math.round((c-${pv.contador})*10)/10">Litros = diferencia con el anterior</button>` : ''}</div>` : ''}
+    <label>Litros</label><input id="md_l" type="number" inputmode="decimal" step="any" value="${d.litros ?? ''}">
+    <div class="hint">Cambiar los litros modifica el stock del tanque de origen${esTan ? ' y del tanque móvil que se cargó' : ''}. El despacho queda marcado como "editado" y se guarda el valor anterior.</div>
+    <div class="err" id="md_e"></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="saveDesp('${id}')">Guardar</button><button class="btn sec" style="background:#fff;color:var(--ink);border:1px solid var(--line)" onclick="closeModal()">Cancelar</button></div>
+    <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:12px"><button class="btn danger small" onclick="delDesp('${id}')">Eliminar despacho</button></div>`);
+};
+saveDesp = async function(id){
+  if(!isAdmin()) return;
+  const d = despachos.find(x => x.id === id); if(!d) return;
+  const err = $('md_e'); err.textContent = '';
+  const upd = {}, ts = Date.now();
+  if($('md_v')){
+    const v = vehiculos.find(x => x.id === $('md_v').value), h = num($('md_h').value);
+    if(!v) return err.textContent = 'Elegí el equipo';
+    if(h == null) return err.textContent = 'Anotá el horómetro o kilometraje';
+    if(v.id !== d.vehiculoId){
+      upd.vehiculoId = v.id; upd.vehiculo = v.nombre; upd.destEditadoTs = ts; upd.destEditadoPor = cur.nombre;
+      if(!d.destAnterior) upd.destAnterior = vName(d.vehiculoId, d.vehiculo);
+    }
+    if(h !== d.horometro){
+      upd.horometro = h; upd.horoEditadoTs = ts; upd.horoEditadoPor = cur.nombre;
+      if(d.horoAnterior == null && d.horometro != null) upd.horoAnterior = d.horometro;
+    }
+  }
+  if($('md_c')){
+    const c = num($('md_c').value);
+    if(c == null) return err.textContent = 'Anotá el contador del surtidor';
+    if(c !== d.contador){
+      upd.contador = c; upd.contEditadoTs = ts; upd.contEditadoPor = cur.nombre;
+      if(d.contAnterior == null && d.contador != null) upd.contAnterior = d.contador;
+    }
+  }
+  const l = num($('md_l').value);
+  if(l == null || l <= 0) return err.textContent = 'Anotá los litros';
+  if(l !== d.litros){
+    upd.litros = l; upd.litrosEditadoTs = ts; upd.litrosEditadoPor = cur.nombre;
+    if(d.litrosAnterior == null && d.litros != null) upd.litrosAnterior = d.litros;
+  }
+  if(!Object.keys(upd).length){ closeModal(); return; }
+  try{ await db.ref('despachos/' + id).update(upd); closeModal(); }
+  catch(e){ err.textContent = 'No se pudo guardar: ' + e.message; }
+};
+</script>
 </body>
 </html>
