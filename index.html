@@ -2612,5 +2612,108 @@ saveDesp = async function(id){
   return _sdParcial(id);
 };
 </script>
+  <script>
+/* ===== STOCK EN EL TIEMPO: columna en Despachos + stock a una fecha ===== */
+var stockFecha = dayKey(new Date(new Date().getFullYear(), new Date().getMonth(), 0).getTime());
+const endOfDay = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d, 23, 59, 59, 999).getTime(); };
+const fdate = k => k ? k.split('-').reverse().join('/') : '';
+function entLitros(e, t){
+  if(isAce(e)) return 0;
+  return e.items ? sum(e.items.filter(i => i.tanqueId === t.id), 'litros') : (e.tanqueId === t.id ? (e.litrosRemito || 0) : 0);
+}
+
+/* Stock de un tanque al final de un momento dado */
+function stockAt(t, endTs){
+  let s = t.stockInicial || 0;
+  entradas.forEach(e => { if(e.ts <= endTs) s += entLitros(e, t); });
+  allDesp().forEach(d => {
+    if(d.ts > endTs) return;
+    if(d.destTanqueId === t.id) s += d.litros || 0;
+    if(d.tanqueId === t.id) s -= d.litros || 0;
+  });
+  return s;
+}
+
+/* Stock del tanque de origen después de cada despacho: {idDespacho: litros} */
+function stockTimeline(){
+  const out = {}, A = allDesp();
+  tanques.forEach(t => {
+    const ev = [];
+    entradas.forEach(e => { const l = entLitros(e, t); if(l) ev.push({ts: e.ts, o: 0, l}); });
+    A.forEach(d => {
+      if(d.destTanqueId === t.id) ev.push({ts: d.ts, o: 1, l: d.litros || 0});
+      if(d.tanqueId === t.id) ev.push({ts: d.ts, o: 1, l: -(d.litros || 0), id: d.id});
+    });
+    ev.sort((a, b) => a.ts - b.ts || a.o - b.o);
+    let s = t.stockInicial || 0;
+    ev.forEach(x => { s += x.l; if(x.id) out[x.id] = s; });
+  });
+  return out;
+}
+
+/* ---------- Despachos: nueva columna Stock ---------- */
+listDespachos = function(){
+  const f = filtered();
+  const aVeh = f.filter(d => d.destTipo !== 'tanque');
+  const aTan = f.filter(d => d.destTipo === 'tanque');
+  const tk = tanques.filter(t => !admSuc || t.sucursalId === admSuc).sort(cmpTank);
+  const vs = vehiculos, SK = stockTimeline();
+  return sucBar() + `<div class="card"><h2>Filtros</h2><div class="row">
+    <div><label>Desde</label><input type="date" value="${filt.desde}" onchange="setF('desde',this.value)"></div>
+    <div><label>Hasta</label><input type="date" value="${filt.hasta}" onchange="setF('hasta',this.value)"></div></div>
+    <div class="row"><div><label>Equipo</label><select onchange="setF('veh',this.value)"><option value="">Todos</option>${vs.map(v => `<option value="${v.id}" ${filt.veh === v.id ? 'selected' : ''}>${esc(v.nombre)}</option>`).join('')}</select></div>
+    <div><label>Sale del tanque</label><select onchange="setF('tanque',this.value)"><option value="">Todos</option>${tk.map(t => `<option value="${t.id}" ${filt.tanque === t.id ? 'selected' : ''}>${esc(sucName(t.sucursalId))} — ${esc(t.nombre)} (${tipoTxt(t.tipo).toLowerCase()})</option>`).join('')}</select></div></div>
+    <div class="flex" style="margin-top:12px"><button class="btn sec small" onclick="exportDespachos()">Exportar CSV</button> <button class="btn sec small" onclick="exportConsumo()">Exportar consumo CSV</button></div></div>
+  ${(() => { const t = tanques.find(x => x.id === filt.tanque); if(!t) return ''; const st = tankStats(t);
+    const stk = filt.hasta ? stockAt(t, endOfDay(filt.hasta)) : st.stock;
+    return `<div class="kpis"><div class="kpi"><span>${esc(t.nombre)} · stock ${filt.hasta ? 'al ' + fdate(filt.hasta) : 'actual'}</span><b style="${stk < 0 ? 'color:var(--bad)' : ''}">${nf(stk, 1)} L</b></div>
+    <div class="kpi"><span>Recibido en total</span><b>${nf(t.tipo === 'fijo' ? st.ent + st.ini : st.rec + st.ini, 1)}</b></div>
+    <div class="kpi"><span>Entregado en total</span><b>${nf(st.sal, 1)}</b></div></div>`; })()}
+  <div class="kpis"><div class="kpi"><span>Litros a equipos</span><b>${nf(sum(aVeh, 'litros'), 1)}</b></div>
+    <div class="kpi"><span>Cargados a tanques móviles</span><b>${nf(sum(aTan, 'litros'), 1)}</b></div>
+    <div class="kpi"><span>Despachos</span><b>${f.length}</b></div></div>
+  ${consumoCard(aVeh)}
+  <div class="card"><h2>Despachos (${f.length > 200 ? 'últimos 200 de ' + f.length : f.length})</h2><div class="tw"><table>
+    <tr><th>Fecha</th><th>Sucursal</th><th>Operador</th><th>Destino</th><th>Sale de</th><th class="n">Litros</th><th class="n">Stock tanque (L)</th><th class="n">Contador</th><th class="n">Hor/Km</th><th>Obs.</th><th class="act"></th></tr>
+    ${f.slice(0, 200).map(d => { const sk = SK[d.id];
+      return `<tr><td>${fdt(d.ts)}</td><td>${esc(d.sucursal || '-')}</td><td>${esc(d.operador)}</td><td>${esc(destLabel(d))}${editPill(d)}</td><td>${esc(origLabel(d))}</td><td class="n">${nf(d.litros, 1)}</td><td class="n">${sk == null ? '-' : `<b style="${sk < 0 ? 'color:var(--bad)' : ''}">${nf(sk, 1)}</b>`}</td><td class="n">${nf(d.contador, 1)}</td><td class="n">${nf(d.horometro, 1)}</td><td><div class="obs" title="${esc(d.obs)}">${esc(d.obs)}</div></td><td class="act">${isAdmin() ? `<button class="btn sec small" onclick="editDesp('${d.id}')">Editar</button>` : ''}</td></tr>`; }).join('')}
+  </table></div>
+  <p class="hint">"Stock tanque" es lo que quedaba en el tanque de la columna "Sale de" justo después de ese despacho (stock inicial + entradas + lo recibido − lo entregado).</p></div>`;
+};
+TABS.despachos.list = listDespachos;
+
+/* ---------- Pestaña Stock: tarjeta "Stock a una fecha" ---------- */
+function stockFechaRows(){
+  const end = endOfDay(stockFecha);
+  return tanques.filter(t => !admSuc || t.sucursalId === admSuc).sort(cmpTank).map(t => ({t, s: stockAt(t, end)}));
+}
+function stockFechaCard(){
+  const rows = stockFechaRows();
+  const fijos = rows.filter(r => r.t.tipo === 'fijo').reduce((a, r) => a + r.s, 0);
+  const movs = rows.filter(r => r.t.tipo !== 'fijo').reduce((a, r) => a + r.s, 0);
+  const prem = rows.filter(r => combOf(r.t) === 'premium').reduce((a, r) => a + r.s, 0);
+  return `<div class="card"><h2>Stock a una fecha</h2>
+    <div class="row"><div><label>Stock al cierre del día</label><input type="date" value="${stockFecha}" onchange="if(this.value){stockFecha=this.value;$('la').innerHTML=listStock()}"></div></div>
+    <div class="kpis" style="margin-top:12px">
+      <div class="kpi"><span>Tanques fijos al ${fdate(stockFecha)}</span><b>${nf(fijos, 1)} L</b></div>
+      <div class="kpi"><span>Tanques móviles</span><b>${nf(movs, 1)} L</b></div>
+      <div class="kpi"><span>Total</span><b>${nf(fijos + movs, 1)} L</b></div>
+      <div class="kpi"><span>De los cuales, premium</span><b>${nf(prem, 1)} L</b></div></div>
+    ${rows.length ? `<div class="tw"><table><tr><th>Sucursal</th><th>Tanque</th><th>Tipo</th><th>Combustible</th><th class="n">Stock al ${fdate(stockFecha)} (L)</th></tr>
+      ${rows.map(r => `<tr><td>${esc(sucName(r.t.sucursalId))}</td><td><b>${esc(r.t.nombre)}</b></td><td>${tipoTxt(r.t.tipo)}</td><td>${combTxt(combOf(r.t))}</td><td class="n"><b style="${r.s < 0 ? 'color:var(--bad)' : ''}">${nf(r.s, 1)}</b></td></tr>`).join('')}</table></div>` : '<p class="hint">No hay tanques.</p>'}
+    <div class="flex" style="margin-top:10px"><button class="btn sec small" onclick="exportStockFecha()">Exportar CSV</button></div>
+    <p class="hint">Cuenta todo lo registrado hasta el final de ese día. Las entradas (remitos) se toman a las 12 del mediodía de su fecha.</p></div>`;
+}
+function exportStockFecha(){
+  download('stock-al-' + stockFecha + '.csv', [['Fecha','Sucursal','Tanque','Tipo','Combustible','Stock (L)']].concat(
+    stockFechaRows().map(r => [fdate(stockFecha), sucName(r.t.sucursalId), r.t.nombre, tipoTxt(r.t.tipo), combTxt(combOf(r.t)), r.s.toFixed(1)])));
+}
+const _lsFecha = listStock;
+listStock = function(){
+  const h = _lsFecha(), i = h.indexOf('</div>') + 6;   // después de los botones de sucursal
+  return h.slice(0, i) + stockFechaCard() + h.slice(i);
+};
+TABS.stock.list = listStock;
+</script>
 </body>
 </html>
