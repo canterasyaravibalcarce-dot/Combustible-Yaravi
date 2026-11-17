@@ -2523,5 +2523,94 @@ listUsuarios = function(){
 };
 TABS.usuarios.list = listUsuarios;
 </script>
+  <script>
+/* ===== CARGAS PARCIALES: consumo "completa a completa" ===== */
+function tramos(arr){
+  const a = arr.filter(d => d.horometro != null).sort((x, y) => x.ts - y.ts);
+  let first = null, anchor = null, acc = 0, parc = [];
+  const list = [];
+  a.forEach(d => {
+    if(!anchor){ if(!d.parcial){ anchor = d; first = d; } return; }
+    acc += d.litros || 0;
+    if(d.parcial){ parc.push(d); return; }
+    list.push({d, prev: anchor, delta: d.horometro - anchor.horometro, lit: acc, parc});
+    anchor = d; acc = 0; parc = [];
+  });
+  return {first, list};
+}
+rateInfo = function(arr){
+  const t = tramos(arr);
+  if(!t.list.length) return null;
+  const last = t.list[t.list.length - 1].d;
+  const delta = last.horometro - t.first.horometro;
+  if(delta <= 0) return null;
+  const lit = sum(t.list, 'lit');
+  return {delta, lit, rate: lit / delta};
+};
+vsProm = function(arr){
+  const t = tramos(arr);
+  if(t.list.length < 2) return null;
+  const L = t.list, last = L[L.length - 1], prevL = L.slice(0, -1);
+  const dp = prevL[prevL.length - 1].d.horometro - t.first.horometro, lp = sum(prevL, 'lit');
+  if(dp <= 0 || last.delta <= 0 || !lp) return null;
+  return (last.lit / last.delta) / (lp / dp) * 100 - 100;
+};
+
+/* ---------- Etiqueta "Parcial" en las tablas ---------- */
+const _epParcial = editPill;
+editPill = function(d){ return _epParcial(d) + (d.parcial ? ' <span class="pill warn">Parcial</span>' : ''); };
+
+/* ---------- Historial del equipo con tramos completa a completa ---------- */
+histCard = function(arr){
+  const asc = arr.slice().sort((a, b) => a.ts - b.ts);
+  const v = vehiculos.find(x => x.id === asc[0].vehiculoId) || {nombre: asc[0].vehiculo, tipo: ''};
+  const km = medidaKm(v), name = vName(asc[0].vehiculoId, asc[0].vehiculo);
+  const ri = rateInfo(asc), T = tramos(asc), byId = {};
+  T.list.forEach(t => byId[t.d.id] = t);
+  const fr = r => km ? nf(r * 100, 1) + ' L/100 km' : nf(r, 1) + ' L/h';
+  let prev = null;
+  const rows = asc.map(d => {
+    const t = byId[d.id];
+    let diff = null;
+    if(d.horometro != null){ if(prev != null) diff = d.horometro - prev; prev = d.horometro; }
+    const rate = (t && t.delta > 0) ? t.lit / t.delta : null;
+    const rev = !!t && (t.delta <= 0 || (ri && rate != null && (rate > ri.rate * 2 || rate < ri.rate / 2)));
+    return {d, t, dif: t ? t.delta : diff, rate, rev};
+  }).reverse();
+  const nrev = rows.filter(r => r.rev).length;
+  const sel = (isAdmin() && v.id) ? `<span class="hint" style="margin:0 6px 0 0">Se mide en:</span>${medidaSel(v)}` : '';
+  return `<div class="card" id="consCard">
+    <div class="flex" style="justify-content:space-between;margin-bottom:8px"><h2 style="margin:0">Historial · ${esc(name)}</h2><div class="flex">${sel}<button class="btn sec small" onclick="setHistVeh(null)">← Volver</button></div></div>
+    <p class="hint" style="margin:0 0 10px">Litros: <b>${nf(sum(asc, 'litros'), 1)}</b> · Cargas: <b>${asc.length}</b> · Recorrido: <b>${ri ? nf(ri.delta, 0) + (km ? ' km' : ' h') : '-'}</b> · Consumo aprox.: <b>${ri ? fr(ri.rate) : '-'}</b>${nrev ? ` · <span class="pill bad">${nrev} para revisar</span>` : ''}</p>
+    <div class="tw"><table>
+      <tr><th>Fecha</th><th>Sucursal</th><th>Operador</th><th>Sale de</th><th class="n">Litros</th><th class="n">${km ? 'Km' : 'Horas'}</th><th class="n">Diferencia</th><th class="n">Consumo del tramo</th><th></th><th class="act"></th></tr>
+      ${rows.map(r => { const d = r.d, t = r.t; return `<tr><td>${fdt(d.ts)}</td><td>${esc(d.sucursal || '-')}</td><td>${esc(d.operador)}</td><td>${esc(origLabel(d))}</td><td class="n">${nf(d.litros, 1)}</td><td class="n">${nf(d.horometro, 1)}</td><td class="n">${r.dif == null ? '-' : nf(r.dif, 1)}</td>
+        <td class="n">${r.rate == null ? '-' : fr(r.rate)}${(t && t.parc.length && r.rate != null) ? `<div class="hint" style="margin:0">incluye ${t.parc.length} parcial${t.parc.length > 1 ? 'es' : ''}: ${nf(t.lit, 0)} L en ${nf(t.delta, 0)}</div>` : ''}</td>
+        <td>${r.rev ? '<span class="pill bad">Revisar</span>' : ''}${editPill(d)}</td><td class="act">${isAdmin() ? `<button class="btn sec small" onclick="editDesp('${d.id}')">Editar</button>` : ''}</td></tr>`; }).join('')}
+    </table></div>
+    <p class="hint">El consumo se mide de una carga completa a la siguiente. Las cargas marcadas como <b>Parcial</b> (no se llenó el tanque del equipo) no cuentan como punto de medición: sus litros se suman a la próxima carga completa. "Revisar" marca un tramo con lectura menor o igual a la anterior, o con un consumo muy distinto al promedio. Tocá Editar para corregirla o marcarla como parcial.</p></div>`;
+};
+
+/* ---------- Casilla "Carga parcial" en Editar despacho ---------- */
+const _edParcial = editDesp;
+editDesp = function(id){
+  _edParcial(id);
+  const d = despachos.find(x => x.id === id), e = $('md_e');
+  if(!d || !e || d.destTipo === 'tanque' || !$('md_l')) return;
+  const box = document.createElement('label');
+  box.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:12px;font-size:14px;color:var(--ink)';
+  box.innerHTML = `<input type="checkbox" id="md_p" style="width:auto" ${d.parcial ? 'checked' : ''}> Carga parcial (no se llenó el tanque del equipo)`;
+  e.before(box);
+};
+const _sdParcial = saveDesp;
+saveDesp = async function(id){
+  const cb = $('md_p'), d = despachos.find(x => x.id === id);
+  if(isAdmin() && cb && d && !!d.parcial !== cb.checked){
+    try{ await db.ref('despachos/' + id).update({parcial: cb.checked ? true : null}); }
+    catch(e){ const er = $('md_e'); if(er) er.textContent = 'No se pudo guardar: ' + e.message; return; }
+  }
+  return _sdParcial(id);
+};
+</script>
 </body>
 </html>
